@@ -1,0 +1,16 @@
+version: '3.8'
+services:
+  backend:
+    build: ./backend
+    ports:
+      - '4000:4000'
+    environment:
+      - PORT=4000
+      - JWT_SECRET=replace_with_secret
+      # Add Firebase credentials via environment or mounted secret
+  frontend:
+    build: ./frontend
+    ports:
+      - '3000:80'
+    environment:
+      - VITE_API_URL=http://localhost:4000
