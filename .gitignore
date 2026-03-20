@@ -1,0 +1,21 @@
+node_modules
+
+# Environment files
+.env
+**/.env
+
+# Build artifacts
+frontend/dist/
+
+# Runtime data/uploads
+backend/localdb.json
+backend/uploads/
+
+# Logs
+*.log
+
+# Backup files
+*.bak
+
+# OS files
+.DS_Store
