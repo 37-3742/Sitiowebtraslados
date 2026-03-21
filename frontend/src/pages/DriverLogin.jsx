@@ -27,14 +27,16 @@ export default function DriverLogin(){
       const res = await axios.post(apiBase+"/api/driver/login", { username, password })
       const token = res.data.token
       const driverId = res.data.driverId
-      const eventRes = await axios.post(apiBase+"/api/events", { name: 'Evento '+eventCode, code: eventCode }, { headers: { Authorization: `Bearer ${token}` } })
+      const eventRes = await axios.get(apiBase+`/api/events/find-by-code?code=${encodeURIComponent(eventCode)}`, { headers: { Authorization: `Bearer ${token}` } })
       const eventId = eventRes.data._id
       localStorage.setItem('token', token)
       localStorage.setItem('driverId', driverId)
       localStorage.setItem('eventId', eventId)
       navigate('/driver')
     }catch(err){
-      setError('Credenciales incorrectas o código de evento inválido.')
+      const status = err?.response?.status
+      if(status === 404) setError('Código de evento no encontrado. Verificá el código con el administrador.')
+      else setError('Credenciales incorrectas o código de evento inválido.')
     }finally{setLoading(false)}
   }
 

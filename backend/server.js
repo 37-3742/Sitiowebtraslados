@@ -39,6 +39,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || 'replace_with_secret';
 const DRIVER_ACCOUNT_TTL_MS = 48 * 60 * 60 * 1000;
+const DEFAULT_REFUND_POLICY_NOTICE = 'La empresa no sera responsable por arrepentimiento de compra ni por inasistencia por motivos personales. El pasajero acepta que no se realizaran devoluciones ni reembolsos ante cancelaciones efectuadas por el propio pasajero o por cancelacion del evento.';
 
 let useFirebase = false;
 let firebaseDB = null;
@@ -85,6 +86,37 @@ function isDriverAccountExpired(driver){
   const expiresAt = Number(driver.expiresAt || 0);
   if(!expiresAt) return false;
   return Date.now() >= expiresAt;
+}
+
+function parseFocusPercent(rawValue, fallback = 50){
+  const parsed = Number(rawValue);
+  if(!Number.isFinite(parsed)) return fallback;
+  return Math.min(100, Math.max(0, Math.round(parsed)));
+}
+
+function parseScalePercent(rawValue, fallback = 100){
+  const parsed = Number(rawValue);
+  if(!Number.isFinite(parsed)) return fallback;
+  return Math.min(130, Math.max(20, Math.round(parsed)));
+}
+
+function normalizeWhatsappNumber(rawValue){
+  if(typeof rawValue !== 'string') return '';
+  return rawValue.trim().replace(/[\s()-]/g, '');
+}
+
+function normalizePaymentMethod(rawValue){
+  if(typeof rawValue !== 'string') return '';
+  return rawValue.trim().replace(/\s+/g, ' ');
+}
+
+function isValidWhatsappNumber(rawValue){
+  return /^\+?\d{7,20}$/.test(rawValue || '');
+}
+
+function normalizeRefundPolicyNotice(rawValue){
+  if(typeof rawValue !== 'string') return DEFAULT_REFUND_POLICY_NOTICE;
+  return rawValue.trim() ? rawValue : DEFAULT_REFUND_POLICY_NOTICE;
 }
 
 function authMiddleware(req,res,next){
@@ -347,16 +379,97 @@ app.post('/api/driver/login', async (req,res)=>{
 });
 
 app.post('/api/events', authMiddleware, async (req,res)=>{
-  const { name, code, date, image, reservationLink, whatsappNumber } = req.body;
-  const result = await createEvent({ name, code, date, image, reservationLink, whatsappNumber, thumbnail: null, status: 'en_curso', createdAt: Date.now() });
+  const {
+    name,
+    code,
+    date,
+    image,
+    reservationLink,
+    whatsappNumber,
+    province,
+    departurePlace,
+    departurePlaces,
+    departureTime,
+    departureTimes,
+    returnTime,
+    paymentMethods,
+    departureInfo,
+    transferAlias,
+    transferCBU,
+    transferBanco,
+    imageFocusX,
+    imageFocusY,
+    imageScale,
+    transferAccountInfo,
+    paymentProofDestination,
+    postPaymentInstructions,
+    refundPolicyNotice
+  } = req.body;
+
+  const result = await createEvent({
+    name,
+    code,
+    date,
+    image,
+    reservationLink,
+    whatsappNumber,
+    province: province || '',
+    departurePlace: Array.isArray(departurePlaces) && departurePlaces.length > 0 ? departurePlaces[0] : (departurePlace || ''),
+    departurePlaces: Array.isArray(departurePlaces) ? departurePlaces : (departurePlace ? [departurePlace] : []),
+    departureTime: departureTime || '',
+    departureTimes: Array.isArray(departureTimes) ? departureTimes : (departureTime ? [departureTime] : []),
+    returnTime: returnTime || '',
+    paymentMethods: paymentMethods || '',
+    departureInfo: departureInfo || '',
+    transferAlias: transferAlias || '',
+    transferCBU: transferCBU || '',
+    transferBanco: transferBanco || '',
+    imageFocusX: parseFocusPercent(imageFocusX, 50),
+    imageFocusY: parseFocusPercent(imageFocusY, 50),
+    imageScale: parseScalePercent(imageScale, 100),
+    transferAccountInfo: transferAccountInfo || '',
+    paymentProofDestination: paymentProofDestination || '',
+    postPaymentInstructions: postPaymentInstructions || '',
+    refundPolicyNotice: normalizeRefundPolicyNotice(refundPolicyNotice),
+    thumbnail: null,
+    status: 'en_curso',
+    createdAt: Date.now()
+  });
   res.json({ _id: result.id, name, code });
+});
+
+// Find event by code (used by driver login)
+app.get('/api/events/find-by-code', async (req,res)=>{
+  const code = (req.query.code || '').trim();
+  if(!code) return res.status(400).json({ error: 'Código requerido' });
+  const lowerCode = code.toLowerCase();
+  if(useFirebase){
+    const snap = await firebaseDB.ref('events').once('value');
+    const all = snap.val() || {};
+    for(const [id, ev] of Object.entries(all)){
+      if((ev.code || '').toLowerCase() === lowerCode || (ev.name || '').toLowerCase() === lowerCode){
+        return res.json({ _id: id, ...ev });
+      }
+    }
+    return res.status(404).json({ error: 'Evento no encontrado' });
+  }else{
+    const db = readLocalDB();
+    const events = db.events || {};
+    for(const id of Object.keys(events)){
+      const ev = events[id];
+      if((ev.code || '').toLowerCase() === lowerCode || (ev.name || '').toLowerCase() === lowerCode){
+        return res.json({ _id: id, ...ev });
+      }
+    }
+    return res.status(404).json({ error: 'Evento no encontrado' });
+  }
 });
 
 app.get('/api/events/:id', async (req,res)=>{
   const eventId = req.params.id;
   const data = await getEventWithLocation(eventId);
   if(!data || !data.event) return res.status(404).json({ error: 'Evento no encontrado' });
-  res.json({ event: data.event, location: data.location });
+  res.json({ event: data.event, location: data.location, meetingPoint: data.meetingPoint });
 });
 
 // Public: add customer experience comment for past events only
@@ -507,6 +620,47 @@ app.patch('/api/drivers/:id/reset-password', authMiddleware, async (req,res)=>{
   res.json({ newPassword });
 });
 
+// Admin only: delete driver access and credentials
+app.delete('/api/drivers/:id', authMiddleware, async (req,res)=>{
+  if(!req.user || req.user.role!=='admin') return res.status(403).json({ error: 'No autorizado' });
+  const driverId = req.params.id;
+
+  if(useFirebase){
+    const driverRef = firebaseDB.ref(`drivers/${driverId}`);
+    const snap = await driverRef.once('value');
+    if(!snap.exists()) return res.status(404).json({ error: 'Chofer no encontrado' });
+
+    await driverRef.remove();
+
+    const eventsSnap = await firebaseDB.ref('events').once('value');
+    const rawEvents = eventsSnap.val() || {};
+    const updates = {};
+    for(const [eventId, eventData] of Object.entries(rawEvents)){
+      if(eventData && eventData.assignedDriver === driverId){
+        updates[`events/${eventId}/assignedDriver`] = null;
+      }
+    }
+
+    if(Object.keys(updates).length > 0){
+      await firebaseDB.ref().update(updates);
+    }
+  }else{
+    const db = readLocalDB();
+    if(!db.drivers || !db.drivers[driverId]) return res.status(404).json({ error: 'Chofer no encontrado' });
+
+    delete db.drivers[driverId];
+    db.events = db.events || {};
+    for(const eventId of Object.keys(db.events)){
+      if(db.events[eventId] && db.events[eventId].assignedDriver === driverId){
+        delete db.events[eventId].assignedDriver;
+      }
+    }
+    writeLocalDB(db);
+  }
+
+  res.json({ success: true });
+});
+
 // Admin only: list customer comments
 app.get('/api/admin/comments', authMiddleware, async (req,res)=>{
   if(!req.user || req.user.role!=='admin') return res.status(403).json({ error: 'No autorizado' });
@@ -606,6 +760,27 @@ app.post('/api/events/upload', authMiddleware, upload.single('image'), async (re
     const reservationLink = req.body.reservationLink || ''
     const whatsappNumber = req.body.whatsappNumber || ''
     const province = req.body.province || ''
+    const departurePlace = req.body.departurePlace || ''
+    let departurePlaces = []
+    try { departurePlaces = JSON.parse(req.body.departurePlaces || '[]') } catch(e) { departurePlaces = [] }
+    if(!Array.isArray(departurePlaces)) departurePlaces = departurePlace ? [departurePlace] : []
+    const departureTime = req.body.departureTime || ''
+    let departureTimes = []
+    try { departureTimes = JSON.parse(req.body.departureTimes || '[]') } catch(e) { departureTimes = [] }
+    if(!Array.isArray(departureTimes)) departureTimes = departureTime ? [departureTime] : []
+    const returnTime = req.body.returnTime || ''
+    const paymentMethods = req.body.paymentMethods || ''
+    const departureInfo = req.body.departureInfo || ''
+    const transferAlias = req.body.transferAlias || ''
+    const transferCBU = req.body.transferCBU || ''
+    const transferBanco = req.body.transferBanco || ''
+    const imageFocusX = parseFocusPercent(req.body.imageFocusX, 50)
+    const imageFocusY = parseFocusPercent(req.body.imageFocusY, 50)
+    const imageScale = parseScalePercent(req.body.imageScale, 100)
+    const transferAccountInfo = req.body.transferAccountInfo || ''
+    const paymentProofDestination = req.body.paymentProofDestination || ''
+    const postPaymentInstructions = req.body.postPaymentInstructions || ''
+    const refundPolicyNotice = normalizeRefundPolicyNotice(req.body.refundPolicyNotice)
 
     const eventId = 'ev_' + Date.now()
     const event = {
@@ -615,6 +790,23 @@ app.post('/api/events/upload', authMiddleware, upload.single('image'), async (re
       province, // <-- ensure province is saved
       reservationLink,
       whatsappNumber,
+      departurePlace: departurePlaces[0] || departurePlace,
+      departurePlaces,
+      departureTime,
+      departureTimes,
+      returnTime,
+      paymentMethods,
+      departureInfo,
+      transferAlias,
+      transferCBU,
+      transferBanco,
+      imageFocusX,
+      imageFocusY,
+      imageScale,
+      transferAccountInfo,
+      paymentProofDestination,
+      postPaymentInstructions,
+      refundPolicyNotice,
       image: imagePath,
       thumbnail: thumbPath,
       status: 'en_curso',
@@ -666,6 +858,15 @@ app.patch('/api/events/:id', authMiddleware, async (req,res)=>{
   if(!req.user || req.user.role!=='admin') return res.status(403).json({ error: 'No autorizado' });
   const eventId = req.params.id;
   const updates = req.body || {};
+  if(Object.prototype.hasOwnProperty.call(updates, 'imageFocusX')){
+    updates.imageFocusX = parseFocusPercent(updates.imageFocusX, 50);
+  }
+  if(Object.prototype.hasOwnProperty.call(updates, 'imageFocusY')){
+    updates.imageFocusY = parseFocusPercent(updates.imageFocusY, 50);
+  }
+  if(Object.prototype.hasOwnProperty.call(updates, 'imageScale')){
+    updates.imageScale = parseScalePercent(updates.imageScale, 100);
+  }
   try{
     if(useFirebase){
       await firebaseDB.ref(`events/${eventId}`).update(updates);
@@ -748,6 +949,216 @@ app.post('/api/settings/driver-login-logo', authMiddleware, upload.single('logo'
   }catch(err){
     console.error('Error uploading driver login logo', err);
     res.status(500).json({ error: 'Error subiendo imagen' });
+  }
+});
+
+// Save organization Instagram link (admin only)
+app.post('/api/settings/instagram-link', authMiddleware, async (req, res) => {
+  if(!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' });
+  try{
+    const rawLink = typeof req.body?.instagramLink === 'string' ? req.body.instagramLink.trim() : '';
+    const normalizedLink = rawLink
+      ? (/^https?:\/\//i.test(rawLink) ? rawLink : `https://${rawLink}`)
+      : '';
+
+    if(normalizedLink){
+      try{
+        const parsed = new URL(normalizedLink);
+        if(!parsed.hostname) return res.status(400).json({ error: 'Link inválido' });
+      }catch(err){
+        return res.status(400).json({ error: 'Link inválido' });
+      }
+    }
+
+    if(useFirebase){
+      await firebaseDB.ref('settings').update({ instagramLink: normalizedLink });
+    }else{
+      const db = readLocalDB();
+      db.settings = db.settings || {};
+      db.settings.instagramLink = normalizedLink;
+      writeLocalDB(db);
+    }
+
+    res.json({ instagramLink: normalizedLink });
+  }catch(err){
+    console.error('Error saving instagram link', err);
+    res.status(500).json({ error: 'Error guardando link' });
+  }
+});
+
+// Save organization social links (admin only)
+app.post('/api/settings/social-links', authMiddleware, async (req, res) => {
+  if(!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' });
+
+  try{
+    const rawSocialLinks = Array.isArray(req.body?.socialLinks) ? req.body.socialLinks : null;
+    if(!rawSocialLinks) return res.status(400).json({ error: 'socialLinks debe ser un arreglo' });
+
+    const normalizeLink = (rawLink) => {
+      const trimmed = typeof rawLink === 'string' ? rawLink.trim() : '';
+      if(!trimmed) return null;
+
+      const full = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+      try{
+        const parsed = new URL(full);
+        if(!parsed.hostname) return null;
+        return full;
+      }catch(err){
+        return null;
+      }
+    };
+
+    const normalized = [];
+    for(let i = 0; i < rawSocialLinks.length; i += 1){
+      const item = rawSocialLinks[i] || {};
+      const name = typeof item.name === 'string' ? item.name.trim() : '';
+      const icon = typeof item.icon === 'string' ? item.icon.trim() : '';
+      const link = normalizeLink(item.link);
+
+      if(!name && !icon && !item.link) continue;
+
+      if(!name) return res.status(400).json({ error: `La red #${i + 1} necesita nombre` });
+      if(!icon) return res.status(400).json({ error: `La red #${i + 1} necesita icono` });
+      if(!link) return res.status(400).json({ error: `La red #${i + 1} tiene un link inválido` });
+
+      normalized.push({
+        name: name.slice(0, 60),
+        icon: icon.slice(0, 60),
+        link
+      });
+    }
+
+    const instagramItem = normalized.find(item => (
+      /instagram/i.test(item.name) || /instagram\.com/i.test(item.link)
+    ));
+    const legacyInstagramLink = instagramItem ? instagramItem.link : '';
+
+    if(useFirebase){
+      await firebaseDB.ref('settings').update({
+        socialLinks: normalized,
+        instagramLink: legacyInstagramLink
+      });
+    }else{
+      const db = readLocalDB();
+      db.settings = db.settings || {};
+      db.settings.socialLinks = normalized;
+      db.settings.instagramLink = legacyInstagramLink;
+      writeLocalDB(db);
+    }
+
+    return res.json({ socialLinks: normalized });
+  }catch(err){
+    console.error('Error saving social links', err);
+    return res.status(500).json({ error: 'Error guardando redes' });
+  }
+});
+
+// Save frequently-used reservation WhatsApp numbers (admin only)
+app.post('/api/settings/reservation-whatsapp-numbers', authMiddleware, async (req, res) => {
+  if(!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' });
+
+  try{
+    const rawNumbers = Array.isArray(req.body?.numbers)
+      ? req.body.numbers
+      : (Array.isArray(req.body?.reservationWhatsappNumbers) ? req.body.reservationWhatsappNumbers : null);
+
+    if(!rawNumbers) return res.status(400).json({ error: 'numbers debe ser un arreglo' });
+
+    const normalized = [];
+    for(let i = 0; i < rawNumbers.length; i += 1){
+      const cleaned = normalizeWhatsappNumber(rawNumbers[i]);
+      if(!cleaned) continue;
+      if(!isValidWhatsappNumber(cleaned)){
+        return res.status(400).json({ error: `Número inválido en posición ${i + 1}` });
+      }
+      if(!normalized.includes(cleaned)) normalized.push(cleaned);
+    }
+
+    if(useFirebase){
+      await firebaseDB.ref('settings').update({ reservationWhatsappNumbers: normalized });
+    }else{
+      const db = readLocalDB();
+      db.settings = db.settings || {};
+      db.settings.reservationWhatsappNumbers = normalized;
+      writeLocalDB(db);
+    }
+
+    return res.json({ reservationWhatsappNumbers: normalized });
+  }catch(err){
+    console.error('Error saving reservation whatsapp numbers', err);
+    return res.status(500).json({ error: 'Error guardando números de WhatsApp' });
+  }
+});
+
+// Save frequently-used payment methods for reservation forms (admin only)
+app.post('/api/settings/reservation-payment-methods', authMiddleware, async (req, res) => {
+  if(!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' });
+
+  try{
+    const rawMethods = Array.isArray(req.body?.methods)
+      ? req.body.methods
+      : (Array.isArray(req.body?.reservationPaymentMethods) ? req.body.reservationPaymentMethods : null);
+
+    if(!rawMethods) return res.status(400).json({ error: 'methods debe ser un arreglo' });
+
+    const normalized = [];
+    const seen = new Set();
+    for(let i = 0; i < rawMethods.length; i += 1){
+      const cleaned = normalizePaymentMethod(rawMethods[i]);
+      if(!cleaned) continue;
+      const key = cleaned.toLowerCase();
+      if(seen.has(key)) continue;
+      seen.add(key);
+      normalized.push(cleaned.slice(0, 80));
+    }
+
+    if(useFirebase){
+      await firebaseDB.ref('settings').update({ reservationPaymentMethods: normalized });
+    }else{
+      const db = readLocalDB();
+      db.settings = db.settings || {};
+      db.settings.reservationPaymentMethods = normalized;
+      writeLocalDB(db);
+    }
+
+    return res.json({ reservationPaymentMethods: normalized });
+  }catch(err){
+    console.error('Error saving reservation payment methods', err);
+    return res.status(500).json({ error: 'Error guardando formas de pago' });
+  }
+});
+
+// Save transfer-report WhatsApp numbers (admin only)
+app.post('/api/settings/transfer-whatsapp-numbers', authMiddleware, async (req, res) => {
+  if(!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' });
+
+  try{
+    const rawNumbers = Array.isArray(req.body?.numbers) ? req.body.numbers : null;
+    if(!rawNumbers) return res.status(400).json({ error: 'numbers debe ser un arreglo' });
+
+    const normalized = [];
+    for(let i = 0; i < rawNumbers.length; i += 1){
+      const cleaned = normalizeWhatsappNumber(rawNumbers[i]);
+      if(!cleaned) continue;
+      if(!isValidWhatsappNumber(cleaned)){
+        return res.status(400).json({ error: `Número inválido en posición ${i + 1}` });
+      }
+      if(!normalized.includes(cleaned)) normalized.push(cleaned);
+    }
+
+    if(useFirebase){
+      await firebaseDB.ref('settings').update({ transferWhatsappNumbers: normalized });
+    }else{
+      const db = readLocalDB();
+      db.settings = db.settings || {};
+      db.settings.transferWhatsappNumbers = normalized;
+      writeLocalDB(db);
+    }
+
+    return res.json({ transferWhatsappNumbers: normalized });
+  }catch(err){
+    console.error('Error saving transfer whatsapp numbers', err);
+    return res.status(500).json({ error: 'Error guardando números' });
   }
 });
 

@@ -11,6 +11,26 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png'
 })
 
+const meetingPointIcon = new L.Icon({
+  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-green.png',
+  iconRetinaUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41]
+})
+
+const busLocationIcon = new L.Icon({
+  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+  iconRetinaUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41]
+})
+
 function MapClickHandler({ onPick }){
   useMapEvents({ click(e){ onPick({ lat: e.latlng.lat, lng: e.latlng.lng }) } })
   return null
@@ -18,7 +38,11 @@ function MapClickHandler({ onPick }){
 
 function MapResizer(){
   const map = useMap()
-  useEffect(()=>{ const t = setTimeout(()=>map.invalidateSize(), 150); return ()=>clearTimeout(t) }, [map])
+  useEffect(()=>{
+    const t1 = setTimeout(()=>map.invalidateSize(), 100)
+    const t2 = setTimeout(()=>map.invalidateSize(), 400)
+    return ()=>{ clearTimeout(t1); clearTimeout(t2) }
+  }, [map])
   return null
 }
 
@@ -30,6 +54,15 @@ function RemoveLeafletPrefix(){
   return null
 }
 
+function DriverMapViewport({ center }){
+  const map = useMap()
+  useEffect(()=>{
+    if(!center) return
+    map.setView([center.lat, center.lng], map.getZoom(), { animate: true })
+  }, [map, center?.lat, center?.lng])
+  return null
+}
+
 export default function DriverPanel(){
   const [message,setMessage] = useState('')
   const driverId = localStorage.getItem('driverId')
@@ -37,6 +70,9 @@ export default function DriverPanel(){
   const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:4000'
   const [events,setEvents] = useState([])
   const [activeEvent, setActiveEvent] = useState(localStorage.getItem('eventId') || '')
+  const [latestLocation, setLatestLocation] = useState(null)
+  const [latestMeetingPoint, setLatestMeetingPoint] = useState(null)
+  const [loadingMapData, setLoadingMapData] = useState(false)
   const [showPicker, setShowPicker] = useState(false)
   const [pickerCenter, setPickerCenter] = useState({ lat: -34.6037, lng: -58.3816 })
   const [pickedLatLng, setPickedLatLng] = useState(null)
@@ -52,6 +88,40 @@ export default function DriverPanel(){
       setEvents(arr)
     }catch(err){console.error(err)}
   }
+
+  async function loadEventTracking(eventId){
+    if(!eventId){
+      setLatestLocation(null)
+      setLatestMeetingPoint(null)
+      return
+    }
+
+    try{
+      setLoadingMapData(true)
+      const res = await axios.get(apiBase+`/api/events/${eventId}`)
+      const payload = res.data || {}
+      setLatestLocation(payload.location ? { lat: payload.location.lat, lng: payload.location.lng, timestamp: payload.location.timestamp } : null)
+      setLatestMeetingPoint(payload.meetingPoint ? { lat: payload.meetingPoint.lat, lng: payload.meetingPoint.lng, timestamp: payload.meetingPoint.timestamp } : null)
+    }catch(err){
+      console.error(err)
+      setLatestLocation(null)
+      setLatestMeetingPoint(null)
+    }finally{
+      setLoadingMapData(false)
+    }
+  }
+
+  useEffect(()=>{
+    if(!activeEvent){
+      setLatestLocation(null)
+      setLatestMeetingPoint(null)
+      return
+    }
+
+    loadEventTracking(activeEvent)
+    const intervalId = window.setInterval(()=>loadEventTracking(activeEvent), 6000)
+    return ()=>window.clearInterval(intervalId)
+  }, [activeEvent])
 
   function selectEvent(e){
     setActiveEvent(e)
@@ -88,6 +158,8 @@ export default function DriverPanel(){
       await axios.post(apiBase+`/api/driver/${driverId}/arrived`, { eventId: activeEvent, lat: pickedLatLng.lat, lng: pickedLatLng.lng }, { headers: { Authorization: `Bearer ${token}` } })
       setShowPicker(false)
       setMessage('Punto de encuentro fijado. Los pasajeros pueden verlo en el mapa.')
+      loadAssigned()
+      loadEventTracking(activeEvent)
     }catch(err){
       console.error(err)
       setMessage('Error al guardar el punto de encuentro')
@@ -104,11 +176,13 @@ export default function DriverPanel(){
       try{
         await axios.post(apiBase+`/api/driver/${driverId}/update`, { eventId: activeEvent, lat: pos.coords.latitude, lng: pos.coords.longitude }, { headers: { Authorization: `Bearer ${token}` } })
         setMessage('Ubicación actualizada')
+        loadEventTracking(activeEvent)
       }catch(err){ console.error(err); setMessage('Error actualizando ubicación') }
     }, ()=>setMessage('Error obteniendo ubicación'))
   }
 
   const active = events.find(ev=>ev.id===activeEvent) || null
+  const liveMapCenter = latestLocation || latestMeetingPoint || { lat: -34.6037, lng: -58.3816 }
 
   return (
     <div className="container driver-panel">
@@ -162,6 +236,63 @@ export default function DriverPanel(){
           </div>
         </section>
       </div>
+
+      <section className="driver-live-map-card card" style={{ marginTop: 16 }}>
+        <div className="card-title">Mapa actualizado</div>
+        <div className="card-body">
+          {!activeEvent ? (
+            <div className="helper">Seleccioná un evento para ver su ubicación en tiempo real.</div>
+          ) : (
+            <>
+              <div className="driver-live-map-wrap">
+                <MapContainer center={[liveMapCenter.lat, liveMapCenter.lng]} zoom={15} style={{ width: '100%', height: '100%' }}>
+                  <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="&copy; OpenStreetMap contributors" />
+                  <RemoveLeafletPrefix />
+                  <MapResizer />
+                  <DriverMapViewport center={liveMapCenter} />
+
+                  {latestMeetingPoint && (
+                    <Marker position={[latestMeetingPoint.lat, latestMeetingPoint.lng]} icon={meetingPointIcon}>
+                      <Popup>
+                        Punto de encuentro<br />
+                        {latestMeetingPoint.lat.toFixed(5)}, {latestMeetingPoint.lng.toFixed(5)}
+                      </Popup>
+                    </Marker>
+                  )}
+
+                  {latestLocation && (
+                    <Marker position={[latestLocation.lat, latestLocation.lng]} icon={busLocationIcon}>
+                      <Popup>
+                        Ubicación actual<br />
+                        {latestLocation.lat.toFixed(5)}, {latestLocation.lng.toFixed(5)}
+                      </Popup>
+                    </Marker>
+                  )}
+                </MapContainer>
+              </div>
+
+              <div className="driver-live-map-meta">
+                {loadingMapData && <div className="helper">Actualizando mapa...</div>}
+                {latestMeetingPoint && (
+                  <div className="helper">
+                    Punto de encuentro: {latestMeetingPoint.lat.toFixed(5)}, {latestMeetingPoint.lng.toFixed(5)}
+                    {latestMeetingPoint.timestamp ? ` · ${new Date(latestMeetingPoint.timestamp).toLocaleString()}` : ''}
+                  </div>
+                )}
+                {latestLocation && (
+                  <div className="helper">
+                    Ubicación actual: {latestLocation.lat.toFixed(5)}, {latestLocation.lng.toFixed(5)}
+                    {latestLocation.timestamp ? ` · ${new Date(latestLocation.timestamp).toLocaleString()}` : ''}
+                  </div>
+                )}
+                {!latestMeetingPoint && !latestLocation && !loadingMapData && (
+                  <div className="helper">Aún no hay ubicaciones guardadas para este evento.</div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </section>
 
       {showPicker && (
         <div className="map-picker-overlay" role="dialog" aria-modal="true" onClick={e=>{ if(e.target===e.currentTarget) setShowPicker(false) }}>

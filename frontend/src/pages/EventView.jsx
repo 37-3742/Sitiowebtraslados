@@ -104,7 +104,7 @@ export default function EventView(){
     }
 
     syncEventData()
-    const intervalId = window.setInterval(syncEventData, 15000)
+    const intervalId = window.setInterval(syncEventData, 6000)
 
     return ()=>{
       disposed = true
