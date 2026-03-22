@@ -1114,6 +1114,36 @@ img{
   color:#14532d;
 }
 
+/* Return-time mode toggle (admin) */
+.return-time-mode-toggle{
+  display:inline-flex;
+  border:1px solid #d1d5db;
+  border-radius:8px;
+  overflow:hidden;
+  margin-bottom:6px;
+}
+
+.return-time-mode-btn{
+  flex:1;
+  padding:4px 12px;
+  font-size:12px;
+  font-weight:600;
+  cursor:pointer;
+  background:#f9fafb;
+  border:none;
+  color:#6b7280;
+  transition:background 0.15s,color 0.15s;
+}
+
+.return-time-mode-btn:first-child{
+  border-right:1px solid #d1d5db;
+}
+
+.return-time-mode-btn.active{
+  background:#16a34a;
+  color:#fff;
+}
+
 .home .home-transfer-copy-btn{
   border:1px solid rgba(22,101,52,0.32);
   border-radius:999px;

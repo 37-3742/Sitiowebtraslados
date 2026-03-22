@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import axios from 'axios'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 const DEFAULT_REFUND_POLICY_NOTICE = 'La empresa no sera responsable por arrepentimiento de compra ni por inasistencia por motivos personales. El pasajero acepta que no se realizaran devoluciones ni reembolsos ante cancelaciones efectuadas por el propio pasajero o por cancelacion del evento.'
 
@@ -15,6 +15,7 @@ export default function AdminPanel(){
   const [departureTimes, setDepartureTimes] = useState([])
   const [departureTimeInput, setDepartureTimeInput] = useState('')
   const [returnTime, setReturnTime] = useState('')
+  const [returnTimeMode, setReturnTimeMode] = useState('time')
   const [paymentMethods, setPaymentMethods] = useState('')
   const [transferAlias, setTransferAlias] = useState('')
   const [transferCBU, setTransferCBU] = useState('')
@@ -69,6 +70,7 @@ export default function AdminPanel(){
     departurePlaces: [],
     departureTimes: [],
     returnTime: '',
+    returnTimeMode: 'time',
     paymentMethods: '',
     imageFocusX: 50,
     imageFocusY: 50,
@@ -82,6 +84,13 @@ export default function AdminPanel(){
     refundPolicyNotice: DEFAULT_REFUND_POLICY_NOTICE
   })
   const api = import.meta.env.VITE_API_URL || 'http://localhost:4000'
+  const navigate = useNavigate()
+
+  function handleAuthError(){
+    localStorage.removeItem('adminToken')
+    alert('Tu sesión expiró. Por favor iniciá sesión nuevamente.')
+    navigate('/admin/login')
+  }
 
   // Provinces list for select
   const PROVINCES = [
@@ -295,6 +304,8 @@ export default function AdminPanel(){
       return saved
     }catch(err){
       console.error(err)
+      const status = err?.response?.status
+      if(status === 401 || status === 403){ handleAuthError(); return null }
       if(!silentError) setMsg('Error guardando números de WhatsApp')
       return null
     }finally{
@@ -321,11 +332,14 @@ export default function AdminPanel(){
     setWhatsappNumber(value)
   }
 
-  function removeSavedWhatsappNumber(value){
+  async function removeSavedWhatsappNumber(value){
     if(!value) return
     const confirmed = window.confirm(`¿Eliminar ${value} de números guardados?`)
     if(!confirmed) return
-    saveWhatsappNumbers(savedWhatsappNumbers.filter(item => item !== value), { showSuccessMessage: true })
+    const filtered = savedWhatsappNumbers.filter(item => item !== value)
+    setSavedWhatsappNumbers(filtered)
+    const result = await saveWhatsappNumbers(filtered, { showSuccessMessage: true })
+    if(result === null) setSavedWhatsappNumbers(savedWhatsappNumbers)
   }
 
   async function saveTransferWhatsappNumbers(nextNumbers, options = {}){
@@ -356,6 +370,8 @@ export default function AdminPanel(){
       return saved
     }catch(err){
       console.error(err)
+      const status = err?.response?.status
+      if(status === 401 || status === 403){ handleAuthError(); return null }
       if(!silentError) setMsg('Error guardando números de WhatsApp')
       return null
     }finally{
@@ -363,11 +379,14 @@ export default function AdminPanel(){
     }
   }
 
-  function removeTransferWhatsappNumber(value){
+  async function removeTransferWhatsappNumber(value){
     if(!value) return
     const confirmed = window.confirm(`¿Eliminar ${value} de números guardados?`)
     if(!confirmed) return
-    saveTransferWhatsappNumbers(savedTransferWhatsappNumbers.filter(item => item !== value), { showSuccessMessage: true })
+    const filtered = savedTransferWhatsappNumbers.filter(item => item !== value)
+    setSavedTransferWhatsappNumbers(filtered)
+    const result = await saveTransferWhatsappNumbers(filtered, { showSuccessMessage: true })
+    if(result === null) setSavedTransferWhatsappNumbers(savedTransferWhatsappNumbers)
   }
 
   async function assignTransferWhatsapp(evId, number){
@@ -423,6 +442,8 @@ export default function AdminPanel(){
       return saved
     }catch(err){
       console.error(err)
+      const status = err?.response?.status
+      if(status === 401 || status === 403){ handleAuthError(); return null }
       if(!silentError) setMsg('Error guardando formas de pago')
       return null
     }finally{
@@ -743,6 +764,7 @@ export default function AdminPanel(){
       setDepartureTimes([])
       setDepartureTimeInput('')
       setReturnTime('')
+      setReturnTimeMode('time')
       setPaymentMethods('')
       setTransferAlias('')
       setTransferCBU('')
@@ -756,7 +778,7 @@ export default function AdminPanel(){
       setRefundPolicyNotice(DEFAULT_REFUND_POLICY_NOTICE)
       setMsg('Evento creado correctamente')
       load()
-    }catch(err){console.error(err); setMsg('Error creando evento')}
+    }catch(err){const status = err?.response?.status; if(status===401||status===403){ handleAuthError(); return } console.error(err); setMsg('Error creando evento')}
     finally{setLoading(false)}
   }
 
@@ -975,6 +997,7 @@ export default function AdminPanel(){
       departurePlaces: ev.departurePlaces && ev.departurePlaces.length > 0 ? ev.departurePlaces : (ev.departurePlace ? [ev.departurePlace] : []),
       departureTimes: ev.departureTimes && ev.departureTimes.length > 0 ? ev.departureTimes : (ev.departureTime ? [ev.departureTime] : []),
       returnTime: ev.returnTime || '',
+      returnTimeMode: ev.returnTime && !/^\d{2}:\d{2}$/.test(ev.returnTime) ? 'text' : 'time',
       paymentMethods: ev.paymentMethods || '',
       imageFocusX: parseFocusPercent(ev.imageFocusX, 50),
       imageFocusY: parseFocusPercent(ev.imageFocusY, 50),
@@ -1067,6 +1090,8 @@ export default function AdminPanel(){
       load()
     }catch(err){
       console.error(err)
+      const status = err?.response?.status
+      if(status === 401 || status === 403){ handleAuthError(); return }
       setMsg('Error actualizando información ampliada')
     }finally{
       setSavingExtraInfoEventId('')
@@ -1178,7 +1203,14 @@ export default function AdminPanel(){
             <div className="admin-field-row">
               <div className="admin-field">
                 <label className="label">Hora de regreso</label>
-                <input className="input" type="time" value={returnTime} onChange={e=>setReturnTime(e.target.value)} />
+                <div className="return-time-mode-toggle">
+                  <button type="button" className={`return-time-mode-btn${returnTimeMode==='time'?' active':''}`} onClick={()=>{ setReturnTimeMode('time'); setReturnTime('') }}>Hora</button>
+                  <button type="button" className={`return-time-mode-btn${returnTimeMode==='text'?' active':''}`} onClick={()=>{ setReturnTimeMode('text'); setReturnTime('') }}>Texto libre</button>
+                </div>
+                {returnTimeMode === 'time'
+                  ? <input className="input" type="time" value={returnTime} onChange={e=>setReturnTime(e.target.value)} />
+                  : <input className="input" type="text" placeholder="Ej: 30min después de finalizado el evento" value={returnTime} onChange={e=>setReturnTime(e.target.value)} />
+                }
               </div>
 
               <div className="admin-field">
@@ -1656,12 +1688,14 @@ export default function AdminPanel(){
 
                           <div className="admin-field">
                             <label className="label">Hora de regreso</label>
-                            <input
-                              className="input"
-                              type="time"
-                              value={extraInfoDraft.returnTime}
-                              onChange={e=>updateExtraInfoDraft({ returnTime: e.target.value })}
-                            />
+                            <div className="return-time-mode-toggle">
+                              <button type="button" className={`return-time-mode-btn${extraInfoDraft.returnTimeMode==='time'?' active':''}`} onClick={()=>updateExtraInfoDraft({ returnTimeMode:'time', returnTime:'' })}>Hora</button>
+                              <button type="button" className={`return-time-mode-btn${extraInfoDraft.returnTimeMode==='text'?' active':''}`} onClick={()=>updateExtraInfoDraft({ returnTimeMode:'text', returnTime:'' })}>Texto libre</button>
+                            </div>
+                            {extraInfoDraft.returnTimeMode === 'time'
+                              ? <input className="input" type="time" value={extraInfoDraft.returnTime} onChange={e=>updateExtraInfoDraft({ returnTime: e.target.value })} />
+                              : <input className="input" type="text" placeholder="Ej: 30min después de finalizado el evento" value={extraInfoDraft.returnTime} onChange={e=>updateExtraInfoDraft({ returnTime: e.target.value })} />
+                            }
                           </div>
 
                           <div className="admin-field admin-field-full">
