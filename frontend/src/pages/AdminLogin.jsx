@@ -13,7 +13,9 @@ export default function AdminLogin(){
     try{
       const res = await axios.post(api+"/api/admin/login", { username, password })
       const token = res.data.token
+      const canManageAdmins = res?.data?.canManageAdmins === true
       localStorage.setItem('adminToken', token)
+      localStorage.setItem('adminCanManageUsers', canManageAdmins ? '1' : '0')
       navigate('/admin')
     }catch(err){
       alert('Error login admin')
@@ -30,8 +32,8 @@ export default function AdminLogin(){
 
         <form className="dl-form" onSubmit={handleLogin}>
           <div className="dl-field">
-            <label className="dl-label">Usuario</label>
-            <input className="dl-input" type="text" placeholder="admin" value={username} onChange={e=>setUsername(e.target.value)} autoComplete="username" required />
+            <label className="dl-label">Usuario o email</label>
+            <input className="dl-input" type="text" placeholder="admin o correo@dominio.com" value={username} onChange={e=>setUsername(e.target.value)} autoComplete="username" required />
           </div>
           <div className="dl-field">
             <label className="dl-label">Contraseña</label>

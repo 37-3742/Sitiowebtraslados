@@ -7,6 +7,8 @@ const DEFAULT_REFUND_POLICY_NOTICE = 'La empresa no sera responsable por arrepen
 export default function AdminPanel(){
   const [name,setName] = useState('')
   const [date,setDate] = useState('')
+  const [dateInput,setDateInput] = useState('')
+  const [eventDates,setEventDates] = useState([])
   const [province,setProvince] = useState('')
   const [whatsappNumber, setWhatsappNumber] = useState('')
   const [reservationLink, setReservationLink] = useState('')
@@ -43,10 +45,28 @@ export default function AdminPanel(){
   const [transferWhatsappInput, setTransferWhatsappInput] = useState('')
   const [savedPaymentMethods, setSavedPaymentMethods] = useState([])
   const [savingPaymentMethods, setSavingPaymentMethods] = useState(false)
+  const [savedTransferAccounts, setSavedTransferAccounts] = useState([])
+  const [savingTransferAccounts, setSavingTransferAccounts] = useState(false)
+  const [savingEventDefaults, setSavingEventDefaults] = useState(false)
   const [imagePreview,setImagePreview] = useState(null)
   const [correctedFile,setCorrectedFile] = useState(null)
   const [events,setEvents] = useState([])
   const [drivers,setDrivers] = useState([])
+  const [adminUsers,setAdminUsers] = useState([])
+  const [canManageAdminUsers,setCanManageAdminUsers] = useState(localStorage.getItem('adminCanManageUsers') === '1')
+  const [loadingAdminUsers,setLoadingAdminUsers] = useState(false)
+  const [creatingAdminUser,setCreatingAdminUser] = useState(false)
+  const [deletingAdminUserId,setDeletingAdminUserId] = useState('')
+  const [updatingAdminUserPasswordId,setUpdatingAdminUserPasswordId] = useState('')
+  const [adminUserPasswordDrafts,setAdminUserPasswordDrafts] = useState({})
+  const [visibleAdminUserPasswords,setVisibleAdminUserPasswords] = useState({})
+  const [changingAdminPassword,setChangingAdminPassword] = useState(false)
+  const [adminUserEmail,setAdminUserEmail] = useState('')
+  const [adminUserPassword,setAdminUserPassword] = useState('')
+  const [adminUserName,setAdminUserName] = useState('')
+  const [adminPasswordCurrent,setAdminPasswordCurrent] = useState('')
+  const [adminPasswordNext,setAdminPasswordNext] = useState('')
+  const [adminPasswordConfirm,setAdminPasswordConfirm] = useState('')
   const [loading,setLoading] = useState(false)
   const [creatingDriver,setCreatingDriver] = useState(false)
   const [driverName,setDriverName] = useState('')
@@ -88,6 +108,7 @@ export default function AdminPanel(){
 
   function handleAuthError(){
     localStorage.removeItem('adminToken')
+    localStorage.removeItem('adminCanManageUsers')
     alert('Tu sesión expiró. Por favor iniciá sesión nuevamente.')
     navigate('/admin/login')
   }
@@ -176,6 +197,52 @@ export default function AdminPanel(){
     return parsePaymentMethodsInput(rawValue).join(', ')
   }
 
+  function normalizeEventDate(rawValue){
+    if(typeof rawValue !== 'string') return ''
+    const trimmed = rawValue.trim()
+    if(!trimmed) return ''
+    const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+    if(!match) return ''
+    const [, year, month, day] = match
+    const parsed = new Date(Number(year), Number(month) - 1, Number(day))
+    if(
+      parsed.getFullYear() !== Number(year)
+      || parsed.getMonth() !== Number(month) - 1
+      || parsed.getDate() !== Number(day)
+    ) return ''
+    return `${year}-${month}-${day}`
+  }
+
+  function normalizeEventDates(rawDates){
+    const source = Array.isArray(rawDates) ? rawDates : []
+    const unique = []
+    const seen = new Set()
+    for(const value of source){
+      const normalized = normalizeEventDate(typeof value === 'string' ? value : String(value ?? ''))
+      if(!normalized || seen.has(normalized)) continue
+      seen.add(normalized)
+      unique.push(normalized)
+    }
+    unique.sort((a,b)=>a.localeCompare(b))
+    return unique
+  }
+
+  function getCalendarDayTime(dateValue){
+    if(!dateValue) return Number.NaN
+
+    if(typeof dateValue === 'string'){
+      const match = dateValue.trim().match(/^(\d{4})-(\d{2})-(\d{2})/)
+      if(match){
+        const [, year, month, day] = match
+        return new Date(Number(year), Number(month) - 1, Number(day)).getTime()
+      }
+    }
+
+    const parsed = new Date(dateValue)
+    if(!Number.isFinite(parsed.getTime())) return Number.NaN
+    return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate()).getTime()
+  }
+
   function formatPaymentMethodsFromSettings(settings){
     const source = Array.isArray(settings?.reservationPaymentMethods) ? settings.reservationPaymentMethods : []
     const unique = []
@@ -189,6 +256,81 @@ export default function AdminPanel(){
       unique.push(normalized)
     }
     return unique
+  }
+
+  function normalizeTransferAlias(rawValue){
+    if(typeof rawValue !== 'string') return ''
+    return rawValue.trim()
+  }
+
+  function normalizeTransferCBU(rawValue){
+    if(typeof rawValue !== 'string') return ''
+    return rawValue.replace(/\s+/g, '').trim()
+  }
+
+  function normalizeTransferBanco(rawValue){
+    if(typeof rawValue !== 'string') return ''
+    return rawValue.trim().replace(/\s+/g, ' ')
+  }
+
+  function normalizeTransferAccountPreset(rawValue){
+    if(!rawValue || typeof rawValue !== 'object') return null
+
+    const alias = normalizeTransferAlias(rawValue.alias ?? rawValue.transferAlias ?? '')
+    const cbu = normalizeTransferCBU(rawValue.cbu ?? rawValue.transferCBU ?? '')
+    const banco = normalizeTransferBanco(rawValue.banco ?? rawValue.transferBanco ?? '')
+
+    if(!alias && !cbu && !banco) return null
+
+    return { alias, cbu, banco }
+  }
+
+  function transferAccountPresetKey(rawValue){
+    const normalized = normalizeTransferAccountPreset(rawValue)
+    if(!normalized) return ''
+    return `${normalized.alias.toLowerCase()}|${normalized.cbu}|${normalized.banco.toLowerCase()}`
+  }
+
+  function formatTransferAccountLabel(rawValue){
+    const normalized = normalizeTransferAccountPreset(rawValue)
+    if(!normalized) return 'Cuenta guardada'
+    const maskedCbu = normalized.cbu ? `••••${normalized.cbu.slice(-4)}` : ''
+    const primary = normalized.alias || (maskedCbu ? `CBU ${maskedCbu}` : 'Cuenta guardada')
+    const details = []
+    if(normalized.banco) details.push(normalized.banco)
+    if(maskedCbu && normalized.alias) details.push(maskedCbu)
+    return details.length ? `${primary} · ${details.join(' · ')}` : primary
+  }
+
+  function formatTransferAccountsFromSettings(settings){
+    const source = Array.isArray(settings?.transferAccountPresets) ? settings.transferAccountPresets : []
+    const unique = []
+    const seen = new Set()
+    for(const item of source){
+      const normalized = normalizeTransferAccountPreset(item)
+      if(!normalized || (!normalized.alias && !normalized.cbu)) continue
+      const key = transferAccountPresetKey(normalized)
+      if(!key || seen.has(key)) continue
+      seen.add(key)
+      unique.push(normalized)
+    }
+    return unique
+  }
+
+  function formatEventDefaultsFromSettings(settings){
+    const raw = settings?.eventDefaults && typeof settings.eventDefaults === 'object' ? settings.eventDefaults : {}
+    return {
+      whatsappNumber: normalizeWhatsappNumber(raw.whatsappNumber || ''),
+      reservationLink: typeof raw.reservationLink === 'string' ? raw.reservationLink.trim() : '',
+      paymentMethods: paymentMethodsToText(raw.paymentMethods || ''),
+      transferAlias: normalizeTransferAlias(raw.transferAlias || ''),
+      transferCBU: normalizeTransferCBU(raw.transferCBU || ''),
+      transferBanco: normalizeTransferBanco(raw.transferBanco || ''),
+      transferAmount: transferAmountToInput(raw.transferAmount),
+      paymentProofDestination: typeof raw.paymentProofDestination === 'string' ? raw.paymentProofDestination.trim() : '',
+      postPaymentInstructions: typeof raw.postPaymentInstructions === 'string' ? raw.postPaymentInstructions.trim() : '',
+      refundPolicyNotice: normalizeRefundPolicyNotice(raw.refundPolicyNotice)
+    }
   }
 
   function mergePaymentMethodIntoField(currentValue, methodValue){
@@ -263,14 +405,27 @@ export default function AdminPanel(){
   useEffect(()=>{
     load()
     loadDrivers(false)
+    loadAdminUsers(false)
     loadComments()
     axios.get(api+'/api/settings').then(r=>{
       const settings = r.data || {}
+      const defaults = formatEventDefaultsFromSettings(settings)
       if(settings?.driverLoginLogo) setDriverLogoSaved(settings.driverLoginLogo)
       setSocialLinks(formatSocialLinksFromSettings(settings))
       setSavedWhatsappNumbers(formatWhatsappNumbersFromSettings(settings))
       setSavedTransferWhatsappNumbers(formatTransferWhatsappNumbersFromSettings(settings))
       setSavedPaymentMethods(formatPaymentMethodsFromSettings(settings))
+      setSavedTransferAccounts(formatTransferAccountsFromSettings(settings))
+      setWhatsappNumber(defaults.whatsappNumber)
+      setReservationLink(defaults.reservationLink)
+      setPaymentMethods(defaults.paymentMethods)
+      setTransferAlias(defaults.transferAlias)
+      setTransferCBU(defaults.transferCBU)
+      setTransferBanco(defaults.transferBanco)
+      setTransferAmount(defaults.transferAmount)
+      setPaymentProofDestination(defaults.paymentProofDestination)
+      setPostPaymentInstructions(defaults.postPaymentInstructions)
+      setRefundPolicyNotice(defaults.refundPolicyNotice)
     }).catch(()=>{})
   }, [])
 
@@ -489,6 +644,138 @@ export default function AdminPanel(){
     savePaymentMethods(savedPaymentMethods.filter(item => item.toLowerCase() !== value.toLowerCase()), { showSuccessMessage: true })
   }
 
+  async function saveTransferAccounts(nextAccounts, options = {}){
+    const { showSuccessMessage = false, silentError = false } = options
+    const token = localStorage.getItem('adminToken')
+    if(!token){
+      if(!silentError) setMsg('Error guardando cuentas: iniciá sesión como admin')
+      return null
+    }
+
+    const unique = []
+    const seen = new Set()
+    for(const value of nextAccounts){
+      const normalized = normalizeTransferAccountPreset(value)
+      if(!normalized || (!normalized.alias && !normalized.cbu)) continue
+      const key = transferAccountPresetKey(normalized)
+      if(!key || seen.has(key)) continue
+      seen.add(key)
+      unique.push(normalized)
+    }
+
+    try{
+      setSavingTransferAccounts(true)
+      const res = await axios.post(
+        api+"/api/settings/transfer-account-presets",
+        { accounts: unique },
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      const saved = formatTransferAccountsFromSettings(res?.data || { transferAccountPresets: unique })
+      setSavedTransferAccounts(saved)
+      if(showSuccessMessage) setMsg('Cuentas de transferencia guardadas')
+      return saved
+    }catch(err){
+      console.error(err)
+      const status = err?.response?.status
+      if(status === 401 || status === 403){ handleAuthError(); return null }
+      if(!silentError) setMsg('Error guardando cuentas de transferencia')
+      return null
+    }finally{
+      setSavingTransferAccounts(false)
+    }
+  }
+
+  function addCurrentTransferAccountToSaved(){
+    const normalized = normalizeTransferAccountPreset({ alias: transferAlias, cbu: transferCBU, banco: transferBanco })
+    if(!normalized || (!normalized.alias && !normalized.cbu)){
+      setMsg('Completá alias o CBU para guardar la cuenta')
+      return
+    }
+
+    setTransferAlias(normalized.alias)
+    setTransferCBU(normalized.cbu)
+    setTransferBanco(normalized.banco)
+
+    const key = transferAccountPresetKey(normalized)
+    if(savedTransferAccounts.some(item => transferAccountPresetKey(item) === key)){
+      setMsg('Esa cuenta ya está guardada')
+      return
+    }
+
+    saveTransferAccounts([...savedTransferAccounts, normalized], { showSuccessMessage: true })
+  }
+
+  function selectSavedTransferAccount(value){
+    if(!value) return
+    const selected = savedTransferAccounts.find(item => transferAccountPresetKey(item) === value)
+    if(!selected) return
+    setTransferAlias(selected.alias)
+    setTransferCBU(selected.cbu)
+    setTransferBanco(selected.banco)
+  }
+
+  async function removeSavedTransferAccount(rawValue){
+    const targetKey = transferAccountPresetKey(rawValue)
+    if(!targetKey) return
+    const target = savedTransferAccounts.find(item => transferAccountPresetKey(item) === targetKey)
+    if(!target) return
+    const confirmed = window.confirm(`¿Eliminar \"${formatTransferAccountLabel(target)}\" de cuentas guardadas?`)
+    if(!confirmed) return
+    const filtered = savedTransferAccounts.filter(item => transferAccountPresetKey(item) !== targetKey)
+    setSavedTransferAccounts(filtered)
+    const result = await saveTransferAccounts(filtered, { showSuccessMessage: true })
+    if(result === null) setSavedTransferAccounts(savedTransferAccounts)
+  }
+
+  async function saveEventDefaults(){
+    const token = localStorage.getItem('adminToken')
+    if(!token){
+      setMsg('Error guardando plantilla: iniciá sesión como admin')
+      return
+    }
+
+    const payload = {
+      whatsappNumber: normalizeWhatsappNumber(whatsappNumber),
+      reservationLink: typeof reservationLink === 'string' ? reservationLink.trim() : '',
+      paymentMethods: paymentMethodsToText(paymentMethods),
+      transferAlias: normalizeTransferAlias(transferAlias),
+      transferCBU: normalizeTransferCBU(transferCBU),
+      transferBanco: normalizeTransferBanco(transferBanco),
+      transferAmount: parseTransferAmount(transferAmount, 0),
+      paymentProofDestination: typeof paymentProofDestination === 'string' ? paymentProofDestination.trim() : '',
+      postPaymentInstructions: typeof postPaymentInstructions === 'string' ? postPaymentInstructions.trim() : '',
+      refundPolicyNotice: normalizeRefundPolicyNotice(refundPolicyNotice)
+    }
+
+    try{
+      setSavingEventDefaults(true)
+      const res = await axios.post(
+        api+"/api/settings/event-defaults",
+        { eventDefaults: payload },
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      const saved = formatEventDefaultsFromSettings(res?.data || { eventDefaults: payload })
+      setWhatsappNumber(saved.whatsappNumber)
+      setReservationLink(saved.reservationLink)
+      setPaymentMethods(saved.paymentMethods)
+      setTransferAlias(saved.transferAlias)
+      setTransferCBU(saved.transferCBU)
+      setTransferBanco(saved.transferBanco)
+      setTransferAmount(saved.transferAmount)
+      setPaymentProofDestination(saved.paymentProofDestination)
+      setPostPaymentInstructions(saved.postPaymentInstructions)
+      setRefundPolicyNotice(saved.refundPolicyNotice)
+      setMsg('Plantilla guardada correctamente')
+    }catch(err){
+      console.error(err)
+      const status = err?.response?.status
+      if(status === 401 || status === 403){ handleAuthError(); return }
+      setMsg('Error guardando plantilla')
+    }finally{
+      setSavingEventDefaults(false)
+    }
+  }
+
   async function load(){
     try{
       const res = await axios.get(api+"/api/events")
@@ -540,6 +827,68 @@ export default function AdminPanel(){
     }
   }
 
+  async function loadAdminUsers(showFeedback = true){
+    const token = localStorage.getItem('adminToken')
+    if(!token){
+      setAdminUsers([])
+      setAdminUserPasswordDrafts({})
+      setVisibleAdminUserPasswords({})
+      setUpdatingAdminUserPasswordId('')
+      setCanManageAdminUsers(false)
+      localStorage.removeItem('adminCanManageUsers')
+      if(showFeedback) setMsg('Error cargando admins: iniciá sesión como admin')
+      return
+    }
+
+    try{
+      setLoadingAdminUsers(true)
+      const res = await axios.get(api+"/api/admin/users", { headers: { Authorization: `Bearer ${token}` } })
+      const data = Array.isArray(res.data) ? res.data : []
+      setAdminUsers(data)
+      setAdminUserPasswordDrafts(prev=>{
+        const next = {}
+        for(const item of data){
+          if(!item?.id) continue
+          const previousValue = typeof prev[item.id] === 'string' ? prev[item.id] : ''
+          const currentValue = typeof item.currentPassword === 'string' ? item.currentPassword : ''
+          next[item.id] = previousValue || currentValue || ''
+        }
+        return next
+      })
+      setVisibleAdminUserPasswords(prev=>{
+        const next = {}
+        for(const item of data){
+          if(item?.id && prev[item.id] === true) next[item.id] = true
+        }
+        return next
+      })
+      setUpdatingAdminUserPasswordId('')
+      setCanManageAdminUsers(true)
+      localStorage.setItem('adminCanManageUsers', '1')
+      if(showFeedback) setMsg(data.length ? `Admins cargados: ${data.length}` : 'No hay usuarios admin cargados')
+    }catch(err){
+      console.error(err)
+      const status = err?.response?.status
+      if(status===401 || status===403){
+        if(status===403){
+          setAdminUsers([])
+          setAdminUserPasswordDrafts({})
+          setVisibleAdminUserPasswords({})
+          setUpdatingAdminUserPasswordId('')
+          setCanManageAdminUsers(false)
+          localStorage.setItem('adminCanManageUsers', '0')
+          if(showFeedback) setMsg('No tenés permisos para gestionar usuarios admin')
+          return
+        }
+        if(showFeedback) setMsg('Error cargando admins: sesión inválida')
+        return
+      }
+      if(showFeedback) setMsg('Error cargando usuarios admin')
+    }finally{
+      setLoadingAdminUsers(false)
+    }
+  }
+
   async function loadComments(){
     const token = localStorage.getItem('adminToken')
     if(!token){
@@ -565,9 +914,16 @@ export default function AdminPanel(){
 
   function formatDateTime(dateValue){
     if(!dateValue) return 'Sin fecha'
-    const parsed = new Date(dateValue)
-    if(Number.isNaN(parsed.getTime())) return 'Fecha inválida'
-    return parsed.toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' })
+    const dayMs = getCalendarDayTime(dateValue)
+    if(!Number.isFinite(dayMs)) return 'Fecha inválida'
+    return new Date(dayMs).toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' })
+  }
+
+  function formatEventDatesSummary(rawDates, fallbackDate = ''){
+    const normalized = normalizeEventDates([...(Array.isArray(rawDates) ? rawDates : []), fallbackDate])
+    if(!normalized.length) return 'Fecha no definida'
+    if(normalized.length === 1) return formatDateTime(normalized[0])
+    return normalized.map(value => formatDateTime(value)).join(' • ')
   }
 
   function buildRatingStars(rawRating){
@@ -676,13 +1032,16 @@ export default function AdminPanel(){
       const normalizedWhatsappNumber = normalizeWhatsappNumber(whatsappNumber)
       const normalizedPaymentMethods = paymentMethodsToText(paymentMethods)
       const normalizedTransferAmount = parseTransferAmount(transferAmount, 0)
+      const normalizedEventDates = normalizeEventDates([...eventDates, date, dateInput])
+      const primaryEventDate = normalizedEventDates[0] || ''
       const token = localStorage.getItem('adminToken')
       if(correctedFile){
         const fd = new FormData()
         fd.append('image', correctedFile)
         fd.append('name', name)
         fd.append('code', name)
-        fd.append('date', date)
+        fd.append('date', primaryEventDate)
+        fd.append('dates', JSON.stringify(normalizedEventDates))
         fd.append('province', province)
         fd.append('reservationLink', reservationLink)
         fd.append('whatsappNumber', normalizedWhatsappNumber)
@@ -714,7 +1073,8 @@ export default function AdminPanel(){
         const payload = {
           name,
           code: name,
-          date,
+          date: primaryEventDate,
+          dates: normalizedEventDates,
           reservationLink,
           whatsappNumber: normalizedWhatsappNumber,
           province,
@@ -755,9 +1115,13 @@ export default function AdminPanel(){
         }
         if(changed) await savePaymentMethods(next, { silentError: true })
       }
-      setName(''); setDate(''); setImage(null); setImagePreview(null); setCorrectedFile(null)
-      setWhatsappNumber('')
-      setReservationLink('')
+      const normalizedTransferAccount = normalizeTransferAccountPreset({ alias: transferAlias, cbu: transferCBU, banco: transferBanco })
+      if(normalizedTransferAccount && (normalizedTransferAccount.alias || normalizedTransferAccount.cbu)){
+        const transferKey = transferAccountPresetKey(normalizedTransferAccount)
+        const alreadySaved = savedTransferAccounts.some(item => transferAccountPresetKey(item) === transferKey)
+        if(!alreadySaved) await saveTransferAccounts([...savedTransferAccounts, normalizedTransferAccount], { silentError: true })
+      }
+      setName(''); setDate(''); setDateInput(''); setEventDates([]); setImage(null); setImagePreview(null); setCorrectedFile(null)
       setProvince('')
       setDeparturePlaces([])
       setDeparturePlaceInput('')
@@ -765,17 +1129,9 @@ export default function AdminPanel(){
       setDepartureTimeInput('')
       setReturnTime('')
       setReturnTimeMode('time')
-      setPaymentMethods('')
-      setTransferAlias('')
-      setTransferCBU('')
-      setTransferBanco('')
-      setTransferAmount('')
       setImageFocusX(50)
       setImageFocusY(50)
       setImageScale(100)
-      setPaymentProofDestination('')
-      setPostPaymentInstructions('')
-      setRefundPolicyNotice(DEFAULT_REFUND_POLICY_NOTICE)
       setMsg('Evento creado correctamente')
       load()
     }catch(err){const status = err?.response?.status; if(status===401||status===403){ handleAuthError(); return } console.error(err); setMsg('Error creando evento')}
@@ -832,8 +1188,21 @@ export default function AdminPanel(){
     setMsg('')
   }
 
-  function removeSocialLinkDraft(socialId){
-    setSocialLinks(prev=>prev.filter(item=>item.id !== socialId))
+  async function removeSocialLinkDraft(socialId){
+    const previousLinks = socialLinks
+    const nextLinks = previousLinks.filter(item=>item.id !== socialId)
+    if(nextLinks.length === previousLinks.length) return
+
+    setSocialLinks(nextLinks)
+    const saved = await saveSocialLinks(nextLinks, {
+      successMessage: 'Red social eliminada',
+      silentError: true
+    })
+
+    if(!saved){
+      setSocialLinks(previousLinks)
+      setMsg('No se pudo eliminar la red social')
+    }
   }
 
   function isInstagramSocial(item){
@@ -858,25 +1227,27 @@ export default function AdminPanel(){
     return <span className="social-admin-icon" aria-hidden="true">{item.icon || '🔗'}</span>
   }
 
-  async function saveSocialLinks(){
+  async function saveSocialLinks(rawSocialLinks, options = {}){
+    const { successMessage = 'Redes sociales actualizadas', silentError = false } = options
     try{
       setSavingSocialLinks(true)
       const token = localStorage.getItem('adminToken')
       if(!token){
-        setMsg('Sesión de admin inválida')
-        return
+        if(!silentError) setMsg('Sesión de admin inválida')
+        return false
       }
 
+      const source = Array.isArray(rawSocialLinks) ? rawSocialLinks : socialLinks
       const payload = []
-      for(let i = 0; i < socialLinks.length; i += 1){
-        const item = socialLinks[i]
+      for(let i = 0; i < source.length; i += 1){
+        const item = source[i]
         const name = typeof item?.name === 'string' ? item.name.trim() : ''
         const icon = typeof item?.icon === 'string' ? item.icon.trim() : ''
         const link = normalizeExternalLink(item?.link)
 
         if(!name || !icon || !link || !isValidExternalLink(link)){
-          setMsg(`Revisá la red #${i + 1}: falta nombre/icono o link válido`)
-          return
+          if(!silentError) setMsg(`Revisá la red #${i + 1}: falta nombre/icono o link válido`)
+          return false
         }
 
         payload.push({ name, icon, link })
@@ -889,10 +1260,12 @@ export default function AdminPanel(){
       )
 
       setSocialLinks(formatSocialLinksFromSettings({ socialLinks: res.data?.socialLinks || [] }))
-      setMsg('Redes sociales actualizadas')
+      if(successMessage) setMsg(successMessage)
+      return true
     }catch(err){
       console.error(err)
-      setMsg(err?.response?.data?.error || 'Error guardando redes sociales')
+      if(!silentError) setMsg(err?.response?.data?.error || 'Error guardando redes sociales')
+      return false
     }finally{
       setSavingSocialLinks(false)
     }
@@ -962,6 +1335,241 @@ export default function AdminPanel(){
     }
   }
 
+  function setAdminPasswordDraftForUser(adminId, value){
+    setAdminUserPasswordDrafts(prev=>({ ...prev, [adminId]: value }))
+  }
+
+  function toggleAdminUserPasswordVisibility(adminId){
+    setVisibleAdminUserPasswords(prev=>({ ...prev, [adminId]: !prev[adminId] }))
+  }
+
+  function generateAdminUserPassword(adminId){
+    const generated = buildPassword(12)
+    setAdminUserPasswordDrafts(prev=>({ ...prev, [adminId]: generated }))
+    setVisibleAdminUserPasswords(prev=>({ ...prev, [adminId]: true }))
+  }
+
+  async function copyAdminUserPassword(adminId, label){
+    const passwordValue = typeof adminUserPasswordDrafts[adminId] === 'string'
+      ? adminUserPasswordDrafts[adminId].trim()
+      : ''
+
+    if(!passwordValue){
+      setMsg('No hay contraseña para copiar en este usuario')
+      return
+    }
+
+    try{
+      await navigator.clipboard.writeText(passwordValue)
+      setMsg(`Contraseña copiada de ${label || 'usuario administrador'}`)
+    }catch(err){
+      console.error(err)
+      setMsg('No se pudo copiar la contraseña al portapapeles')
+    }
+  }
+
+  async function handleCreateAdminUser(){
+    if(!canManageAdminUsers){
+      setMsg('No tenés permisos para crear usuarios admin')
+      return
+    }
+
+    const email = typeof adminUserEmail === 'string' ? adminUserEmail.trim().toLowerCase() : ''
+    const password = typeof adminUserPassword === 'string' ? adminUserPassword.trim() : ''
+    const nameValue = typeof adminUserName === 'string' ? adminUserName.trim() : ''
+
+    if(!email){
+      setMsg('Ingresá un email para crear el usuario administrador')
+      return
+    }
+
+    if(!/^\S+@\S+\.\S+$/.test(email)){
+      setMsg('El email ingresado no es válido')
+      return
+    }
+
+    if(password.length < 8){
+      setMsg('La contraseña del admin debe tener al menos 8 caracteres')
+      return
+    }
+
+    setCreatingAdminUser(true)
+    try{
+      const token = localStorage.getItem('adminToken')
+      const res = await axios.post(
+        api+"/api/admin/users",
+        { email, password, name: nameValue },
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+
+      const createdId = typeof res?.data?.admin?.id === 'string' ? res.data.admin.id : ''
+      if(createdId){
+        setAdminUserPasswordDrafts(prev=>({ ...prev, [createdId]: password }))
+        setVisibleAdminUserPasswords(prev=>({ ...prev, [createdId]: true }))
+      }
+
+      setAdminUserEmail('')
+      setAdminUserPassword('')
+      setAdminUserName('')
+      setMsg('Usuario administrador creado')
+      loadAdminUsers(false)
+    }catch(err){
+      console.error(err)
+      const status = err?.response?.status
+      if(status===401){ handleAuthError(); return }
+      if(status===403){
+        setCanManageAdminUsers(false)
+        localStorage.setItem('adminCanManageUsers', '0')
+        setMsg(err?.response?.data?.error || 'No tenés permisos para crear usuarios admin')
+        return
+      }
+      setMsg(err?.response?.data?.error || 'Error creando usuario administrador')
+    }finally{
+      setCreatingAdminUser(false)
+    }
+  }
+
+  async function handleDeleteAdminUser(adminId, label){
+    if(!canManageAdminUsers){
+      setMsg('No tenés permisos para eliminar usuarios admin')
+      return
+    }
+
+    const targetLabel = label || 'este usuario administrador'
+    if(!confirm(`¿Eliminar ${targetLabel}? Esta acción no se puede deshacer.`)) return
+
+    setDeletingAdminUserId(adminId)
+    try{
+      const token = localStorage.getItem('adminToken')
+      await axios.delete(api+`/api/admin/users/${adminId}`, { headers: { Authorization: `Bearer ${token}` } })
+      setAdminUserPasswordDrafts(prev=>{
+        if(!Object.prototype.hasOwnProperty.call(prev, adminId)) return prev
+        const next = { ...prev }
+        delete next[adminId]
+        return next
+      })
+      setVisibleAdminUserPasswords(prev=>{
+        if(!Object.prototype.hasOwnProperty.call(prev, adminId)) return prev
+        const next = { ...prev }
+        delete next[adminId]
+        return next
+      })
+      setMsg('Usuario administrador eliminado')
+      loadAdminUsers(false)
+    }catch(err){
+      console.error(err)
+      const status = err?.response?.status
+      if(status===401){ handleAuthError(); return }
+      if(status===403){
+        setCanManageAdminUsers(false)
+        localStorage.setItem('adminCanManageUsers', '0')
+        setMsg(err?.response?.data?.error || 'No tenés permisos para eliminar usuarios admin')
+        return
+      }
+      setMsg(err?.response?.data?.error || 'Error eliminando usuario administrador')
+    }finally{
+      setDeletingAdminUserId('')
+    }
+  }
+
+  async function handleUpdateAdminUserPassword(adminId, label){
+    if(!canManageAdminUsers){
+      setMsg('No tenés permisos para actualizar contraseñas de admins')
+      return
+    }
+
+    const newPassword = typeof adminUserPasswordDrafts[adminId] === 'string'
+      ? adminUserPasswordDrafts[adminId].trim()
+      : ''
+
+    if(newPassword.length < 8){
+      setMsg('La nueva contraseña debe tener al menos 8 caracteres')
+      return
+    }
+
+    setUpdatingAdminUserPasswordId(adminId)
+    try{
+      const token = localStorage.getItem('adminToken')
+      await axios.patch(
+        api+`/api/admin/users/${adminId}/password`,
+        { newPassword },
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+
+      setAdminUsers(prev=>prev.map(item=>(
+        item.id === adminId ? { ...item, currentPassword: newPassword } : item
+      )))
+      setAdminUserPasswordDrafts(prev=>({ ...prev, [adminId]: newPassword }))
+      setVisibleAdminUserPasswords(prev=>({ ...prev, [adminId]: true }))
+
+      const targetLabel = label || 'usuario administrador'
+      setMsg(`Contraseña actualizada para ${targetLabel}`)
+    }catch(err){
+      console.error(err)
+      const status = err?.response?.status
+      if(status===401){ handleAuthError(); return }
+      if(status===403){
+        setCanManageAdminUsers(false)
+        localStorage.setItem('adminCanManageUsers', '0')
+        setMsg(err?.response?.data?.error || 'No tenés permisos para actualizar contraseñas de admins')
+        return
+      }
+      setMsg(err?.response?.data?.error || 'Error actualizando contraseña de admin')
+    }finally{
+      setUpdatingAdminUserPasswordId('')
+    }
+  }
+
+  async function handleChangeMyAdminPassword(e){
+    e.preventDefault()
+
+    const currentPassword = typeof adminPasswordCurrent === 'string' ? adminPasswordCurrent.trim() : ''
+    const newPassword = typeof adminPasswordNext === 'string' ? adminPasswordNext.trim() : ''
+    const confirmPassword = typeof adminPasswordConfirm === 'string' ? adminPasswordConfirm.trim() : ''
+
+    if(!currentPassword){
+      setMsg('Ingresá tu contraseña actual')
+      return
+    }
+
+    if(newPassword.length < 8){
+      setMsg('La nueva contraseña debe tener al menos 8 caracteres')
+      return
+    }
+
+    if(newPassword !== confirmPassword){
+      setMsg('La confirmación no coincide con la nueva contraseña')
+      return
+    }
+
+    setChangingAdminPassword(true)
+    try{
+      const token = localStorage.getItem('adminToken')
+      if(!token){
+        setMsg('Sesión de admin inválida')
+        return
+      }
+
+      await axios.patch(
+        api+"/api/admin/password",
+        { currentPassword, newPassword },
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+
+      setAdminPasswordCurrent('')
+      setAdminPasswordNext('')
+      setAdminPasswordConfirm('')
+      setMsg('Contraseña actualizada correctamente')
+    }catch(err){
+      console.error(err)
+      const status = err?.response?.status
+      if(status===401 || status===403){ handleAuthError(); return }
+      setMsg(err?.response?.data?.error || 'Error actualizando contraseña')
+    }finally{
+      setChangingAdminPassword(false)
+    }
+  }
+
   async function editDepartureInfo(ev){
     const info = prompt('Ingrese la información de salida (lugar, hora, detalles):', ev.departureInfo || '')
     if(info===null) return
@@ -1021,6 +1629,27 @@ export default function AdminPanel(){
     if(!place || departurePlaces.includes(place)) return
     setDeparturePlaces(prev => [...prev, place])
     setDeparturePlaceInput('')
+  }
+
+  function addEventDate(){
+    const normalized = normalizeEventDate(dateInput)
+    if(!normalized) return
+    setEventDates(prev => {
+      const next = normalizeEventDates([...prev, normalized])
+      setDate(next[0] || '')
+      return next
+    })
+    setDateInput('')
+  }
+
+  function removeEventDate(value){
+    const normalized = normalizeEventDate(value)
+    if(!normalized) return
+    setEventDates(prev => {
+      const next = prev.filter(item => item !== normalized)
+      setDate(next[0] || '')
+      return next
+    })
   }
 
   function removeDeparturePlace(i){
@@ -1085,6 +1714,16 @@ export default function AdminPanel(){
         },
         { headers: { Authorization: `Bearer ${token}` } }
       )
+      const normalizedTransferAccount = normalizeTransferAccountPreset({
+        alias: extraInfoDraft.transferAlias,
+        cbu: extraInfoDraft.transferCBU,
+        banco: extraInfoDraft.transferBanco
+      })
+      if(normalizedTransferAccount && (normalizedTransferAccount.alias || normalizedTransferAccount.cbu)){
+        const transferKey = transferAccountPresetKey(normalizedTransferAccount)
+        const alreadySaved = savedTransferAccounts.some(item => transferAccountPresetKey(item) === transferKey)
+        if(!alreadySaved) await saveTransferAccounts([...savedTransferAccounts, normalizedTransferAccount], { silentError: true })
+      }
       setMsg('Información ampliada actualizada')
       setExpandedExtraInfoEventId('')
       load()
@@ -1101,7 +1740,7 @@ export default function AdminPanel(){
   const visibleEvents = filteredEvents()
 
   return (
-    <div className="container">
+    <div className="container admin">
       <div className="admin-header">
         <div className="admin-header-left">
           <div className="admin-header-title">Panel Administrador</div>
@@ -1153,8 +1792,37 @@ export default function AdminPanel(){
               </div>
 
               <div className="admin-field">
-                <label className="label">Fecha</label>
-                <input className="input" type="date" value={date} onChange={e=>setDate(e.target.value)} />
+                <label className="label">Fechas del evento</label>
+                <div className="departure-times-editor">
+                  <div className="departure-times-input-row">
+                    <input
+                      className="input"
+                      type="date"
+                      value={dateInput}
+                      onChange={e=>setDateInput(e.target.value)}
+                      onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();addEventDate()}}}
+                    />
+                    <button
+                      type="button"
+                      className="btn ghost departure-times-add-btn"
+                      onClick={addEventDate}
+                      disabled={!normalizeEventDate(dateInput)}
+                    >
+                      ＋ Agregar
+                    </button>
+                  </div>
+                  {eventDates.length > 0 && (
+                    <div className="departure-times-tags">
+                      {eventDates.map(value=>(
+                        <span key={value} className="departure-time-tag">
+                          {formatDateTime(value)}
+                          <button type="button" className="departure-time-remove" onClick={()=>removeEventDate(value)} title="Quitar">×</button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="field-note">Podés agregar varias fechas. La primera se usa como fecha principal.</div>
               </div>
             </div>
 
@@ -1214,48 +1882,9 @@ export default function AdminPanel(){
               </div>
 
               <div className="admin-field">
-                <label className="label">Formas de pago</label>
-                <input
-                  className="input"
-                  placeholder="Ej: Efectivo, Transferencia, Tarjeta"
-                  value={paymentMethods}
-                  onChange={e=>setPaymentMethods(e.target.value)}
-                />
-                <div className="whatsapp-reservation-tools payment-methods-tools">
-                  <div className="whatsapp-saved-row">
-                    <select
-                      className="input"
-                      value=""
-                      onChange={e=>selectSavedPaymentMethod(e.target.value)}
-                      disabled={!savedPaymentMethods.length}
-                    >
-                      <option value="">{savedPaymentMethods.length ? 'Agregar forma guardada...' : 'Sin formas guardadas'}</option>
-                      {savedPaymentMethods.map(method => (
-                        <option key={method} value={method}>{method}</option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      className="btn secondary whatsapp-save-btn"
-                      onClick={addCurrentPaymentMethodsToSaved}
-                      disabled={!paymentMethods.trim() || savingPaymentMethods}
-                    >
-                      {savingPaymentMethods ? 'Guardando...' : 'Guardar formas'}
-                    </button>
-                  </div>
-
-                  {savedPaymentMethods.length > 0 && (
-                    <div className="whatsapp-saved-list">
-                      {savedPaymentMethods.map(method => (
-                        <span key={method} className="whatsapp-saved-chip">
-                          <button type="button" className="whatsapp-chip-use" onClick={()=>selectSavedPaymentMethod(method)}>{method}</button>
-                          <button type="button" className="whatsapp-chip-delete" onClick={()=>removeSavedPaymentMethod(method)} title="Eliminar forma de pago" aria-label={`Eliminar ${method}`}>×</button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div className="field-note">Seleccionar una guardada la agrega al campo actual.</div>
+                <label className="label">Campos repetitivos</label>
+                <div className="field-note">WhatsApp, link de reserva, pagos, transferencia y políticas se toman del Formulario 2 (Plantilla).</div>
+                <div className="field-note">Podés modificarlos una sola vez y se aplican en cada nuevo evento.</div>
               </div>
             </div>
 
@@ -1269,7 +1898,10 @@ export default function AdminPanel(){
               <label className="label">Encuadre de imagen en card</label>
               <div className="image-focus-editor">
                 <div className="image-focus-row">
-                  <label className="sublabel">Horizontal ({imageFocusX}%)</label>
+                  <div className="image-focus-row-head">
+                    <span className="sublabel">Horizontal</span>
+                    <span className="image-focus-value">{imageFocusX}%</span>
+                  </div>
                   <input
                     className="image-focus-range"
                     type="range"
@@ -1279,9 +1911,13 @@ export default function AdminPanel(){
                     value={imageFocusX}
                     onChange={e=>setImageFocusX(parseFocusPercent(e.target.value, 50))}
                   />
+                  <div className="image-focus-hint">Izquierda a derecha</div>
                 </div>
                 <div className="image-focus-row">
-                  <label className="sublabel">Vertical ({imageFocusY}%)</label>
+                  <div className="image-focus-row-head">
+                    <span className="sublabel">Vertical</span>
+                    <span className="image-focus-value">{imageFocusY}%</span>
+                  </div>
                   <input
                     className="image-focus-range"
                     type="range"
@@ -1291,9 +1927,13 @@ export default function AdminPanel(){
                     value={imageFocusY}
                     onChange={e=>setImageFocusY(parseFocusPercent(e.target.value, 50))}
                   />
+                  <div className="image-focus-hint">Arriba a abajo</div>
                 </div>
                 <div className="image-focus-row">
-                  <label className="sublabel">Tamano ({imageScale}%)</label>
+                  <div className="image-focus-row-head">
+                    <span className="sublabel">Tamano</span>
+                    <span className="image-focus-value">{imageScale}%</span>
+                  </div>
                   <input
                     className="image-focus-range"
                     type="range"
@@ -1303,40 +1943,90 @@ export default function AdminPanel(){
                     value={imageScale}
                     onChange={e=>setImageScale(parseScalePercent(e.target.value, 100))}
                   />
+                  <div className="image-focus-hint">Zoom de imagen</div>
+                </div>
+                <div className="image-focus-actions">
+                  <button
+                    type="button"
+                    className="btn ghost image-focus-action-btn"
+                    onClick={()=>{ setImageFocusX(50); setImageFocusY(50); setImageScale(100) }}
+                  >
+                    Restablecer
+                  </button>
+                  <button
+                    type="button"
+                    className="btn ghost image-focus-action-btn"
+                    onClick={()=>setImageScale(100)}
+                  >
+                    Zoom 100%
+                  </button>
                 </div>
                 {imagePreview && (
                   <div className="image-focus-preview">
-                    <div className="field-note">Imagen completa para acomodar</div>
-                    <div className="image-focus-reference-shell">
-                      <div className="image-focus-reference-frame">
-                        <img
-                          src={imagePreview}
-                          alt="Vista previa completa"
-                          style={{
-                            objectPosition: `${imageFocusX}% ${imageFocusY}%`,
-                            '--image-scale': `${(parseScalePercent(imageScale, 100) / 100).toFixed(2)}`
-                          }}
-                        />
-                      </div>
-                    </div>
-                    <div className="field-note">Resultado en la card (como se vera en Home)</div>
-                    <div className="image-focus-home-preview-shell">
-                      <article className="event-card image-focus-home-card-preview">
-                        <div className="thumb uploaded-thumb landscape" style={{ position:'relative' }}>
+                    <div className="image-focus-preview-card">
+                      <div className="image-focus-preview-title">Imagen completa para ajustar</div>
+                      <div className="image-focus-reference-shell">
+                        <div className="image-focus-reference-frame">
                           <img
                             src={imagePreview}
-                            alt="Vista previa encuadre"
+                            alt="Vista previa completa"
                             style={{
                               objectPosition: `${imageFocusX}% ${imageFocusY}%`,
                               '--image-scale': `${(parseScalePercent(imageScale, 100) / 100).toFixed(2)}`
                             }}
                           />
-                          <div className="province-badge">{province || 'N/D'}</div>
                         </div>
-                      </article>
+                      </div>
+                    </div>
+                    <div className="image-focus-preview-card">
+                      <div className="image-focus-preview-title">Vista final en Home</div>
+                      <div className="image-focus-home-preview-shell">
+                        <article className="event-card image-focus-home-card-preview">
+                          <div className="thumb" style={{ position:'relative' }}>
+                            <img
+                              src={imagePreview}
+                              alt="Vista previa encuadre"
+                              style={{
+                                objectPosition: `${imageFocusX}% ${imageFocusY}%`,
+                                '--image-scale': `${(parseScalePercent(imageScale, 100) / 100).toFixed(2)}`
+                              }}
+                            />
+                            <div className="province-badge">{province || 'N/D'}</div>
+                          </div>
+                        </article>
+                      </div>
                     </div>
                   </div>
                 )}
+                {!imagePreview && (
+                  <div className="image-focus-empty">
+                    Subí una imagen para activar la vista previa del encuadre.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="admin-field">
+              <label className="label">Plantilla aplicada en este evento</label>
+              <div className="field-note">WhatsApp reserva: {whatsappNumber || 'No configurado'}</div>
+              <div className="field-note">Link reserva: {reservationLink || 'No configurado'}</div>
+              <div className="field-note">Pagos: {paymentMethods || 'No configurado'}</div>
+              <div className="field-note">Transferencia: {transferAlias || transferCBU ? `${transferAlias || 'Sin alias'}${transferCBU ? ` · ${transferCBU}` : ''}${transferBanco ? ` · ${transferBanco}` : ''}` : 'No configurado'}</div>
+              <div className="field-note">Comprobante: {paymentProofDestination || 'No configurado'}</div>
+            </div>
+
+            <div className="admin-form-actions">
+              <button className="btn positive" type="submit" disabled={loading}>{loading? 'Creando...':'Crear evento'}</button>
+            </div>
+            </form>
+          </section>
+
+          <section className="admin-form-block event-form-block">
+            <div className="panel-header">
+              <div>
+                <span className="form-kind-chip">Formulario 2</span>
+                <h3 className="admin-section-title">Plantilla de datos concurrentes</h3>
+                <p>Configurá una sola vez los datos que se repiten y se aplicarán automáticamente en cada nuevo evento.</p>
               </div>
             </div>
 
@@ -1382,13 +2072,56 @@ export default function AdminPanel(){
                   </div>
                 )}
               </div>
-              <div className="field-note">O dejá vacío si preferís agregar otra URL después</div>
             </div>
 
             <div className="admin-field">
               <label className="label">URL de reserva (alternativa)</label>
               <input className="input" placeholder="Ej: https://www.ejemplo.com/reservar" value={reservationLink} onChange={e=>setReservationLink(e.target.value)} />
-              <div className="field-note">Usá esta URL si no querés usar WhatsApp. Si completás ambas, se usa el link de WhatsApp.</div>
+              <div className="field-note">Si completás ambas, en Home se prioriza WhatsApp para reservar.</div>
+            </div>
+
+            <div className="admin-field">
+              <label className="label">Formas de pago</label>
+              <input
+                className="input"
+                placeholder="Ej: Efectivo, Transferencia, Tarjeta"
+                value={paymentMethods}
+                onChange={e=>setPaymentMethods(e.target.value)}
+              />
+              <div className="whatsapp-reservation-tools payment-methods-tools">
+                <div className="whatsapp-saved-row">
+                  <select
+                    className="input"
+                    value=""
+                    onChange={e=>selectSavedPaymentMethod(e.target.value)}
+                    disabled={!savedPaymentMethods.length}
+                  >
+                    <option value="">{savedPaymentMethods.length ? 'Agregar forma guardada...' : 'Sin formas guardadas'}</option>
+                    {savedPaymentMethods.map(method => (
+                      <option key={method} value={method}>{method}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn secondary whatsapp-save-btn"
+                    onClick={addCurrentPaymentMethodsToSaved}
+                    disabled={!paymentMethods.trim() || savingPaymentMethods}
+                  >
+                    {savingPaymentMethods ? 'Guardando...' : 'Guardar formas'}
+                  </button>
+                </div>
+
+                {savedPaymentMethods.length > 0 && (
+                  <div className="whatsapp-saved-list">
+                    {savedPaymentMethods.map(method => (
+                      <span key={method} className="whatsapp-saved-chip">
+                        <button type="button" className="whatsapp-chip-use" onClick={()=>selectSavedPaymentMethod(method)}>{method}</button>
+                        <button type="button" className="whatsapp-chip-delete" onClick={()=>removeSavedPaymentMethod(method)} title="Eliminar forma de pago" aria-label={`Eliminar ${method}`}>×</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="admin-field">
@@ -1419,6 +2152,45 @@ export default function AdminPanel(){
                   />
                 </div>
               </div>
+              <div className="whatsapp-reservation-tools">
+                <div className="whatsapp-saved-row">
+                  <select
+                    className="input"
+                    value=""
+                    onChange={e=>selectSavedTransferAccount(e.target.value)}
+                    disabled={!savedTransferAccounts.length}
+                  >
+                    <option value="">{savedTransferAccounts.length ? 'Usar cuenta guardada...' : 'Sin cuentas guardadas'}</option>
+                    {savedTransferAccounts.map(account => {
+                      const key = transferAccountPresetKey(account)
+                      return <option key={key} value={key}>{formatTransferAccountLabel(account)}</option>
+                    })}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn secondary whatsapp-save-btn"
+                    onClick={addCurrentTransferAccountToSaved}
+                    disabled={(!transferAlias.trim() && !transferCBU.trim()) || savingTransferAccounts}
+                  >
+                    {savingTransferAccounts ? 'Guardando...' : 'Guardar cuenta'}
+                  </button>
+                </div>
+
+                {savedTransferAccounts.length > 0 && (
+                  <div className="whatsapp-saved-list">
+                    {savedTransferAccounts.map(account => {
+                      const key = transferAccountPresetKey(account)
+                      const label = formatTransferAccountLabel(account)
+                      return (
+                        <span key={key} className="whatsapp-saved-chip">
+                          <button type="button" className="whatsapp-chip-use" onClick={()=>selectSavedTransferAccount(key)}>{label}</button>
+                          <button type="button" className="whatsapp-chip-delete" onClick={()=>removeSavedTransferAccount(account)} title="Eliminar cuenta" aria-label={`Eliminar ${label}`}>×</button>
+                        </span>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="admin-field">
@@ -1448,13 +2220,13 @@ export default function AdminPanel(){
                 value={refundPolicyNotice}
                 onChange={e=>setRefundPolicyNotice(e.target.value)}
               />
-              <div className="field-note">Este texto sale por defecto y podes editarlo si lo necesitas.</div>
             </div>
 
             <div className="admin-form-actions">
-              <button className="btn positive" type="submit" disabled={loading}>{loading? 'Creando...':'Crear evento'}</button>
+              <button className="btn positive" type="button" onClick={saveEventDefaults} disabled={savingEventDefaults}>
+                {savingEventDefaults ? 'Guardando plantilla...' : 'Guardar plantilla'}
+              </button>
             </div>
-            </form>
           </section>
 
           <div className="admin-forms-divider" role="separator" aria-label="Separador entre formularios">
@@ -1464,7 +2236,7 @@ export default function AdminPanel(){
           <div className="form-panel driver-form-panel admin-form-block driver-form-block">
             <div className="panel-header">
               <div>
-                <span className="form-kind-chip">Formulario 2</span>
+                <span className="form-kind-chip">Formulario 3</span>
                 <h3 className="admin-section-title">Alta de chofer</h3>
                 <p>Generá credenciales automáticamente o personalizadas. La cuenta expirará en 48 horas.</p>
               </div>
@@ -1551,7 +2323,7 @@ export default function AdminPanel(){
               const isExtraInfoOpen = expandedExtraInfoEventId === ev.id
               return (
                 <div key={ev.id} className={`event-card ${isExtraInfoOpen ? 'event-card-editing' : ''}`}>
-                  <div className="thumb uploaded-thumb landscape" style={{position:'relative'}}>
+                  <div className="thumb" style={{position:'relative'}}>
                     <img
                       src={imageSrc || '/placeholder.png'}
                       alt=""
@@ -1569,8 +2341,14 @@ export default function AdminPanel(){
                         {ev.assignedDriver ? 'Chofer asignado' : 'Sin chofer'}
                       </span>
                     </div>
-                    <p className="event-date">{ev.date ? new Date(ev.date).toLocaleString() : 'Fecha no definida'}</p>
+                    <p className="event-date">{formatEventDatesSummary(ev.dates, ev.date)}</p>
                     <div className="meta">
+                      {Array.isArray(ev.dates) && ev.dates.length > 1 && (
+                        <div className="meta-row meta-row-full">
+                          <span className="meta-label">Fechas</span>
+                          <span className="meta-value">{formatEventDatesSummary(ev.dates, ev.date)}</span>
+                        </div>
+                      )}
                       <div className="meta-row">
                         <span className="meta-label">Provincia</span>
                         <span className="meta-value">{ev.province || 'No definida'}</span>
@@ -1702,7 +2480,10 @@ export default function AdminPanel(){
                             <label className="label">Encuadre de imagen en card</label>
                             <div className="image-focus-editor">
                               <div className="image-focus-row">
-                                <label className="sublabel">Horizontal ({parseFocusPercent(extraInfoDraft.imageFocusX, 50)}%)</label>
+                                <div className="image-focus-row-head">
+                                  <span className="sublabel">Horizontal</span>
+                                  <span className="image-focus-value">{parseFocusPercent(extraInfoDraft.imageFocusX, 50)}%</span>
+                                </div>
                                 <input
                                   className="image-focus-range"
                                   type="range"
@@ -1712,9 +2493,13 @@ export default function AdminPanel(){
                                   value={parseFocusPercent(extraInfoDraft.imageFocusX, 50)}
                                   onChange={e=>updateExtraInfoDraft({ imageFocusX: parseFocusPercent(e.target.value, 50) })}
                                 />
+                                <div className="image-focus-hint">Izquierda a derecha</div>
                               </div>
                               <div className="image-focus-row">
-                                <label className="sublabel">Vertical ({parseFocusPercent(extraInfoDraft.imageFocusY, 50)}%)</label>
+                                <div className="image-focus-row-head">
+                                  <span className="sublabel">Vertical</span>
+                                  <span className="image-focus-value">{parseFocusPercent(extraInfoDraft.imageFocusY, 50)}%</span>
+                                </div>
                                 <input
                                   className="image-focus-range"
                                   type="range"
@@ -1724,9 +2509,13 @@ export default function AdminPanel(){
                                   value={parseFocusPercent(extraInfoDraft.imageFocusY, 50)}
                                   onChange={e=>updateExtraInfoDraft({ imageFocusY: parseFocusPercent(e.target.value, 50) })}
                                 />
+                                <div className="image-focus-hint">Arriba a abajo</div>
                               </div>
                               <div className="image-focus-row">
-                                <label className="sublabel">Tamano ({parseScalePercent(extraInfoDraft.imageScale, 100)}%)</label>
+                                <div className="image-focus-row-head">
+                                  <span className="sublabel">Tamano</span>
+                                  <span className="image-focus-value">{parseScalePercent(extraInfoDraft.imageScale, 100)}%</span>
+                                </div>
                                 <input
                                   className="image-focus-range"
                                   type="range"
@@ -1736,36 +2525,57 @@ export default function AdminPanel(){
                                   value={parseScalePercent(extraInfoDraft.imageScale, 100)}
                                   onChange={e=>updateExtraInfoDraft({ imageScale: parseScalePercent(e.target.value, 100) })}
                                 />
+                                <div className="image-focus-hint">Zoom de imagen</div>
+                              </div>
+                              <div className="image-focus-actions">
+                                <button
+                                  type="button"
+                                  className="btn ghost image-focus-action-btn"
+                                  onClick={()=>updateExtraInfoDraft({ imageFocusX: 50, imageFocusY: 50, imageScale: 100 })}
+                                >
+                                  Restablecer
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn ghost image-focus-action-btn"
+                                  onClick={()=>updateExtraInfoDraft({ imageScale: 100 })}
+                                >
+                                  Zoom 100%
+                                </button>
                               </div>
                               <div className="image-focus-preview">
-                                <div className="field-note">Imagen completa para acomodar</div>
-                                <div className="image-focus-reference-shell">
-                                  <div className="image-focus-reference-frame">
-                                    <img
-                                      src={imageSrc || '/placeholder.png'}
-                                      alt={`Vista completa ${ev.name}`}
-                                      style={{
-                                        objectPosition: `${parseFocusPercent(extraInfoDraft.imageFocusX, 50)}% ${parseFocusPercent(extraInfoDraft.imageFocusY, 50)}%`,
-                                        '--image-scale': `${(parseScalePercent(extraInfoDraft.imageScale, 100) / 100).toFixed(2)}`
-                                      }}
-                                    />
-                                  </div>
-                                </div>
-                                <div className="field-note">Resultado en la card (como se vera en Home)</div>
-                                <div className="image-focus-home-preview-shell">
-                                  <article className="event-card image-focus-home-card-preview">
-                                    <div className="thumb uploaded-thumb landscape" style={{ position:'relative' }}>
+                                <div className="image-focus-preview-card">
+                                  <div className="image-focus-preview-title">Imagen completa para ajustar</div>
+                                  <div className="image-focus-reference-shell">
+                                    <div className="image-focus-reference-frame">
                                       <img
                                         src={imageSrc || '/placeholder.png'}
-                                        alt={`Vista previa ${ev.name}`}
+                                        alt={`Vista completa ${ev.name}`}
                                         style={{
                                           objectPosition: `${parseFocusPercent(extraInfoDraft.imageFocusX, 50)}% ${parseFocusPercent(extraInfoDraft.imageFocusY, 50)}%`,
                                           '--image-scale': `${(parseScalePercent(extraInfoDraft.imageScale, 100) / 100).toFixed(2)}`
                                         }}
                                       />
-                                      <div className="province-badge">{ev.province || 'N/D'}</div>
                                     </div>
-                                  </article>
+                                  </div>
+                                </div>
+                                <div className="image-focus-preview-card">
+                                  <div className="image-focus-preview-title">Vista final en Home</div>
+                                  <div className="image-focus-home-preview-shell">
+                                    <article className="event-card image-focus-home-card-preview">
+                                      <div className="thumb" style={{ position:'relative' }}>
+                                        <img
+                                          src={imageSrc || '/placeholder.png'}
+                                          alt={`Vista previa ${ev.name}`}
+                                          style={{
+                                            objectPosition: `${parseFocusPercent(extraInfoDraft.imageFocusX, 50)}% ${parseFocusPercent(extraInfoDraft.imageFocusY, 50)}%`,
+                                            '--image-scale': `${(parseScalePercent(extraInfoDraft.imageScale, 100) / 100).toFixed(2)}`
+                                          }}
+                                        />
+                                        <div className="province-badge">{ev.province || 'N/D'}</div>
+                                      </div>
+                                    </article>
+                                  </div>
                                 </div>
                               </div>
                             </div>
@@ -2025,6 +2835,178 @@ export default function AdminPanel(){
             ))}
           </div>
         )}
+      </div>
+
+      {canManageAdminUsers && (
+      <div className="admin-users-panel card">
+        <div className="panel-header">
+          <div>
+            <h3 className="admin-section-title">Usuarios administradores</h3>
+            <p>Creá accesos admin, actualizá sus contraseñas y eliminá usuarios existentes.</p>
+          </div>
+          <button className="btn secondary" type="button" onClick={()=>loadAdminUsers(true)} disabled={loadingAdminUsers}>
+            {loadingAdminUsers ? 'Actualizando...' : 'Actualizar lista'}
+          </button>
+        </div>
+
+        <div className="admin-users-create">
+          <input
+            className="input"
+            type="email"
+            placeholder="Email del admin"
+            value={adminUserEmail}
+            onChange={e=>setAdminUserEmail(e.target.value)}
+          />
+          <input
+            className="input"
+            type="password"
+            placeholder="Contraseña (mínimo 8 caracteres)"
+            value={adminUserPassword}
+            onChange={e=>setAdminUserPassword(e.target.value)}
+          />
+          <input
+            className="input"
+            type="text"
+            placeholder="Nombre (opcional)"
+            value={adminUserName}
+            onChange={e=>setAdminUserName(e.target.value)}
+          />
+          <button
+            className="btn positive"
+            type="button"
+            onClick={handleCreateAdminUser}
+            disabled={creatingAdminUser}
+          >
+            {creatingAdminUser ? 'Creando...' : 'Crear usuario admin'}
+          </button>
+        </div>
+
+        <div className="field-note">Podés consultar la contraseña vigente de cada admin (botón Ver), copiarla y actualizarla desde la misma fila.</div>
+
+        {loadingAdminUsers && adminUsers.length === 0 && (
+          <div className="helper" style={{ marginTop: 12 }}>Cargando usuarios admin...</div>
+        )}
+
+        {!loadingAdminUsers && adminUsers.length === 0 ? (
+          <div className="helper" style={{ marginTop: 12 }}>No hay usuarios administradores cargados.</div>
+        ) : (
+          <div className="admin-users-table">
+            <div className="admin-users-row admin-users-head">
+              <span>Email</span>
+              <span>Nombre</span>
+              <span>Creado</span>
+              <span>Contraseña</span>
+              <span>Acciones</span>
+            </div>
+            {adminUsers.map(adminItem => (
+              <div key={adminItem.id} className="admin-users-row">
+                <span className="admin-users-email">{adminItem.email || adminItem.username || '—'}</span>
+                <span className="admin-users-name">{adminItem.name || '—'}</span>
+                <span className="admin-users-created">
+                  {adminItem.createdAt ? new Date(Number(adminItem.createdAt)).toLocaleDateString('es-AR', { day:'2-digit', month:'short', year:'numeric' }) : '—'}
+                </span>
+                <span className="admin-users-password-cell">
+                  <input
+                    className="input admin-users-password-input"
+                    type={visibleAdminUserPasswords[adminItem.id] ? 'text' : 'password'}
+                    placeholder="Contraseña vigente / nueva contraseña (mínimo 8)"
+                    value={adminUserPasswordDrafts[adminItem.id] || ''}
+                    onChange={e=>setAdminPasswordDraftForUser(adminItem.id, e.target.value)}
+                  />
+                  <span className="field-note admin-users-password-note">
+                    {adminItem.currentPassword
+                      ? 'Contraseña vigente registrada.'
+                      : 'No hay contraseña vigente registrada para este usuario. Podés generar una nueva.'}
+                  </span>
+                  <span className="admin-users-password-actions">
+                    <button
+                      className="btn ghost"
+                      type="button"
+                      disabled={updatingAdminUserPasswordId === adminItem.id}
+                      onClick={()=>toggleAdminUserPasswordVisibility(adminItem.id)}
+                    >
+                      {visibleAdminUserPasswords[adminItem.id] ? 'Ocultar' : 'Ver'}
+                    </button>
+                    <button
+                      className="btn secondary"
+                      type="button"
+                      disabled={updatingAdminUserPasswordId === adminItem.id}
+                      onClick={()=>generateAdminUserPassword(adminItem.id)}
+                    >
+                      Generar
+                    </button>
+                    <button
+                      className="btn secondary"
+                      type="button"
+                      disabled={updatingAdminUserPasswordId === adminItem.id || !(adminUserPasswordDrafts[adminItem.id] || '').trim()}
+                      onClick={()=>copyAdminUserPassword(adminItem.id, adminItem.email || adminItem.username || adminItem.name)}
+                    >
+                      Copiar
+                    </button>
+                    <button
+                      className="btn outline"
+                      type="button"
+                      disabled={updatingAdminUserPasswordId === adminItem.id || deletingAdminUserId === adminItem.id}
+                      onClick={()=>handleUpdateAdminUserPassword(adminItem.id, adminItem.email || adminItem.username || adminItem.name)}
+                    >
+                      {updatingAdminUserPasswordId === adminItem.id ? 'Actualizando...' : 'Actualizar'}
+                    </button>
+                  </span>
+                </span>
+                <span className="admin-users-actions">
+                  <button
+                    className="btn danger"
+                    type="button"
+                    disabled={deletingAdminUserId === adminItem.id || updatingAdminUserPasswordId === adminItem.id}
+                    onClick={()=>handleDeleteAdminUser(adminItem.id, adminItem.email || adminItem.username || adminItem.name)}
+                  >
+                    {deletingAdminUserId === adminItem.id ? 'Eliminando...' : 'Eliminar'}
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      )}
+
+      <div className="admin-password-panel card">
+        <div className="panel-header">
+          <div>
+            <h3 className="admin-section-title">Actualizar mi contraseña</h3>
+            <p>Modificá la contraseña de la cuenta con la que estás logueado como administrador.</p>
+          </div>
+        </div>
+
+        <form className="admin-password-form" onSubmit={handleChangeMyAdminPassword}>
+          <input
+            className="input"
+            type="password"
+            autoComplete="current-password"
+            placeholder="Contraseña actual"
+            value={adminPasswordCurrent}
+            onChange={e=>setAdminPasswordCurrent(e.target.value)}
+          />
+          <input
+            className="input"
+            type="password"
+            autoComplete="new-password"
+            placeholder="Nueva contraseña (mínimo 8 caracteres)"
+            value={adminPasswordNext}
+            onChange={e=>setAdminPasswordNext(e.target.value)}
+          />
+          <input
+            className="input"
+            type="password"
+            autoComplete="new-password"
+            placeholder="Confirmar nueva contraseña"
+            value={adminPasswordConfirm}
+            onChange={e=>setAdminPasswordConfirm(e.target.value)}
+          />
+          <button className="btn positive" type="submit" disabled={changingAdminPassword}>
+            {changingAdminPassword ? 'Actualizando...' : 'Actualizar contraseña'}
+          </button>
+        </form>
       </div>
 
       <div className="logo-upload-panel card">

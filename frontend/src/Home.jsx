@@ -103,7 +103,7 @@ export default function Home(){
     if(!dateValue) return Number.NaN
 
     if(typeof dateValue === 'string'){
-      const match = dateValue.trim().match(/^(\d{4})-(\d{2})-(\d{2})/)
+      const match = dateValue.match(/^(\d{4})-(\d{2})-(\d{2})$/)
       if(match){
         const [, year, month, day] = match
         return new Date(Number(year), Number(month) - 1, Number(day)).getTime()
@@ -131,52 +131,6 @@ export default function Home(){
     const eventDayMs = getCalendarDayTime(dateStr)
     if(!Number.isFinite(eventDayMs)) return false
     return eventDayMs < getTodayTime()
-  }
-
-  function collectEventDateKeys(ev){
-    const source = [
-      ...(Array.isArray(ev?.dates) ? ev.dates : []),
-      ev?.date || ''
-    ]
-    const unique = []
-    const seen = new Set()
-
-    for(const rawValue of source){
-      if(typeof rawValue !== 'string') continue
-      const dayMs = getCalendarDayTime(rawValue)
-      if(!Number.isFinite(dayMs)) continue
-      const parsed = new Date(dayMs)
-      const key = `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`
-      if(seen.has(key)) continue
-      seen.add(key)
-      unique.push(key)
-    }
-
-    unique.sort((a,b)=>a.localeCompare(b))
-    return unique
-  }
-
-  function formatSingleEventDate(dateValue){
-    const dayMs = getCalendarDayTime(dateValue)
-    if(!Number.isFinite(dayMs)) return 'Fecha inválida'
-    return new Date(dayMs).toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' })
-  }
-
-  function formatEventDatesSummary(ev){
-    const eventDateKeys = collectEventDateKeys(ev)
-    if(!eventDateKeys.length) return 'Fecha no definida'
-    if(eventDateKeys.length === 1) return formatSingleEventDate(eventDateKeys[0])
-    return eventDateKeys.map(value => formatSingleEventDate(value)).join(' • ')
-  }
-
-  function isTodayEvent(ev){
-    return collectEventDateKeys(ev).some(value => isToday(value))
-  }
-
-  function isPastEvent(ev){
-    const eventDateKeys = collectEventDateKeys(ev)
-    if(!eventDateKeys.length) return false
-    return isPast(eventDateKeys[eventDateKeys.length - 1])
   }
 
   function getSocialHandle(link){
@@ -457,39 +411,23 @@ export default function Home(){
   }
 
   function compareEventsByDatePriority(a, b){
-    const aDateKeys = collectEventDateKeys(a)
-    const bDateKeys = collectEventDateKeys(b)
     const todayMs = getTodayTime()
-    const aDayMs = aDateKeys.length ? getCalendarDayTime(aDateKeys[0]) : Number.NaN
-    const bDayMs = bDateKeys.length ? getCalendarDayTime(bDateKeys[0]) : Number.NaN
+    const aDayMs = getCalendarDayTime(a.date)
+    const bDayMs = getCalendarDayTime(b.date)
     const aHasValidDate = Number.isFinite(aDayMs)
     const bHasValidDate = Number.isFinite(bDayMs)
 
     if(aHasValidDate !== bHasValidDate) return aHasValidDate ? -1 : 1
     if(!aHasValidDate && !bHasValidDate) return (a.name || '').localeCompare(b.name || '')
 
-    const aLastDayMs = getCalendarDayTime(aDateKeys[aDateKeys.length - 1])
-    const bLastDayMs = getCalendarDayTime(bDateKeys[bDateKeys.length - 1])
-    const aIsPast = Number.isFinite(aLastDayMs) ? aLastDayMs < todayMs : false
-    const bIsPast = Number.isFinite(bLastDayMs) ? bLastDayMs < todayMs : false
+    const aIsPast = aDayMs < todayMs
+    const bIsPast = bDayMs < todayMs
 
     if(aIsPast !== bIsPast) return aIsPast ? 1 : -1
 
-    if(!aIsPast){
-      const aUpcomingMs = aDateKeys
-        .map(value => getCalendarDayTime(value))
-        .find(value => Number.isFinite(value) && value >= todayMs)
-      const bUpcomingMs = bDateKeys
-        .map(value => getCalendarDayTime(value))
-        .find(value => Number.isFinite(value) && value >= todayMs)
+    if(!aIsPast) return aDayMs - bDayMs
 
-      if(Number.isFinite(aUpcomingMs) && Number.isFinite(bUpcomingMs)) return aUpcomingMs - bUpcomingMs
-      if(Number.isFinite(aUpcomingMs)) return -1
-      if(Number.isFinite(bUpcomingMs)) return 1
-      return aDayMs - bDayMs
-    }
-
-    return bLastDayMs - aLastDayMs
+    return bDayMs - aDayMs
   }
 
   function getCommentDraft(eventId){
@@ -589,7 +527,7 @@ export default function Home(){
   }
 
   const filtered = events.filter(ev=>{
-    if(onlyToday && !isTodayEvent(ev)) return false
+    if(onlyToday && !isToday(ev.date)) return false
     if(query && !ev.name.toLowerCase().includes(query.toLowerCase())) return false
     return true
   }).sort(compareEventsByDatePriority)
@@ -599,8 +537,12 @@ export default function Home(){
       <div className="content">
         <div className="hero-large card">
           <div className="hero-large-left">
-            <h1>Tu traslado asegurado al evento</h1>
-            <p>Contactate con nosotros y reservá tu lugar.</p>
+            <h1>Tu traslado aseguro al eventos</h1>
+            <p>Visualizá el estado en tiempo real, contactá al responsable y reservá tu lugar para el traslado al evento.</p>
+            <div className="hero-cta-row">
+              <Link to="/admin/login"><button className="btn positive">Publicar evento</button></Link>
+              <Link to="/driver/login"><button className="btn ghost hero-secondary-btn">Entrar como chofer</button></Link>
+            </div>
           </div>
           <div className="hero-large-right">
             <div className="hero-brand-stage">
@@ -649,18 +591,11 @@ export default function Home(){
                 const imageSrc = srcKey ? (srcKey.startsWith('http') ? srcKey : `${api}${srcKey}`) : null
                 const imageObjectPosition = `${parseFocusPercent(ev.imageFocusX, 50)}% ${parseFocusPercent(ev.imageFocusY, 50)}%`
                 const imageScaleFactor = (parseScalePercent(ev.imageScale, 100) / 100).toFixed(2)
-                const pastEvent = isPastEvent(ev)
-                const todayEvent = isTodayEvent(ev)
-                const hasMultipleDates = collectEventDateKeys(ev).length > 1
-                const normalizedReservationLink = typeof ev.reservationLink === 'string' ? ev.reservationLink.trim() : ''
-                const whatsappSource = ev.whatsappNumber || import.meta.env.VITE_COMPANY_WHATSAPP || '5491123456789'
-                const whatsappPhone = String(whatsappSource).replace(/\D/g, '') || '5491123456789'
-                const contactWhatsappUrl = `https://wa.me/${whatsappPhone}?text=${encodeURIComponent('Quiero coordinar un traslado para ' + (ev.name || ''))}`
-                const reserveWhatsappUrl = `https://wa.me/${whatsappPhone}?text=${encodeURIComponent('Quiero reservar un traslado para ' + (ev.name || ''))}`
-                const reserveExternalUrl = normalizedReservationLink || reserveWhatsappUrl
-                const reserveExternalLabel = normalizedReservationLink ? 'Otro medio' : 'WhatsApp'
-                const showTracking = todayEvent && !pastEvent
-                const showReserve = !pastEvent && !todayEvent
+                const pastEvent = isPast(ev.date)
+                const todayEvent = isToday(ev.date)
+                const showReserve = !pastEvent && Boolean(ev.reservationLink)
+                const showBusLocation = todayEvent
+                const showTracking = !showBusLocation && !pastEvent && !ev.reservationLink
                 const singleActionFeedback = pastEvent && !showTracking && !showReserve
                 const reserveFlowOpen = showReserve && activeReserveEventId === ev.id
                 const transferDetailsOpen = reserveFlowOpen && activeTransferEventId === ev.id
@@ -707,16 +642,10 @@ export default function Home(){
                           {isInfoExpanded ? 'Ocultar info' : 'Ver más info'}
                         </button>
                       </div>
-                      <p className="muted">{formatEventDatesSummary(ev)}</p>
+                      <p className="muted">{ev.date ? new Date(ev.date).toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Fecha no definida'}</p>
 
                       {isInfoExpanded && (
                         <div className="event-extra-info-panel">
-                          {hasMultipleDates && (
-                            <div className="event-extra-info-row">
-                              <span className="event-extra-info-label">Fechas</span>
-                              <span className="event-extra-info-value">{formatEventDatesSummary(ev)}</span>
-                            </div>
-                          )}
                           <div className="event-extra-info-row">
                             <span className="event-extra-info-label">Lugar salida</span>
                             <span className="event-extra-info-value">{ev.departurePlaces && ev.departurePlaces.length > 0 ? ev.departurePlaces.join(' • ') : ev.departurePlace || 'No informado'}</span>
@@ -753,10 +682,14 @@ export default function Home(){
                         <button className={`event-action event-action--feedback${singleActionFeedback ? ' event-action--single' : ''}`} type="button" onClick={()=>toggleCommentForm(ev.id)}>
                           <span className="event-action-label">{openCommentEventId === ev.id ? 'Cerrar calificación' : 'Calificar servicio'}</span>
                         </button>
-                      ) : (
-                        <button className="event-action event-action--contact" type="button" onClick={()=>window.open(contactWhatsappUrl,'_blank')}>
+                      ) : !todayEvent ? (
+                        <button className="event-action event-action--contact" type="button" onClick={()=>{ const phone = ev.whatsappNumber || import.meta.env.VITE_COMPANY_WHATSAPP || '5491123456789'; window.open(`https://wa.me/${phone}?text=${encodeURIComponent('Quiero coordinar un traslado para '+(ev.name||''))}`,'_blank') }}>
                           <span className="event-action-label">Contactar</span>
                         </button>
+                      ) : (
+                        <Link to={`/evento/${ev.id}`} className="event-action event-action--location">
+                          <span className="event-action-label">Ubicación colectivo</span>
+                        </Link>
                       ))}
 
                       {showReserve ? (
@@ -785,13 +718,13 @@ export default function Home(){
                             <span className="event-action-label">Transferencia</span>
                           </button>
                           <a
-                            href={reserveExternalUrl}
+                            href={ev.reservationLink}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="event-action event-action--other-method"
                             onClick={()=>closeReserveFlow(ev.id)}
                           >
-                            <span className="event-action-label">{reserveExternalLabel}</span>
+                            <span className="event-action-label">Otro medio</span>
                           </a>
                         </div>
 
@@ -983,40 +916,28 @@ export default function Home(){
           </main>
         </div>
 
-        <div className="home-footer-stack">
-          <div className="home-footer-actions-row">
-            <aside className="sidebar-social card sidebar-social-actions">
-              <div className="card-title">Accesos rápidos</div>
-              <div className="card-body sidebar-social-actions-body">
-                <Link to="/admin/login" className="btn positive sidebar-quick-btn">Publicar evento</Link>
-                <Link to="/driver/login" className="btn secondary sidebar-quick-btn">Entrar como chofer</Link>
-              </div>
-            </aside>
+        <footer className="home-footer card" aria-label="Créditos del sitio">
+          <div className="home-footer-left">
+            © {new Date().getFullYear()} Eventos Traslados. Todos los derechos reservados.
           </div>
-
-          <footer className="home-footer card" aria-label="Créditos del sitio">
-            <div className="home-footer-left">
-              © {new Date().getFullYear()} Eventos Traslados. Todos los derechos reservados.
-            </div>
-            <div className="home-footer-right">
-              <span className="home-footer-credit-label">Diseño y desarrollo:</span>
-              <span className="home-footer-credit-name">Jazmín Coral Barrera</span>
-              <a
-                href={creatorLinkedinUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="home-footer-linkedin"
-                aria-label="LinkedIn de la creadora"
-              >
-                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <rect x="2.5" y="2.5" width="19" height="19" rx="4" fill="currentColor"/>
-                  <path d="M8 10.1V17H5.8V10.1H8ZM6.9 6.8C7.6 6.8 8.1 7.3 8.1 7.9C8.1 8.6 7.6 9.1 6.9 9.1C6.2 9.1 5.7 8.6 5.7 7.9C5.7 7.3 6.2 6.8 6.9 6.8Z" fill="white"/>
-                  <path d="M10 10.1H12.1V11.1H12.1C12.4 10.5 13.2 9.9 14.3 9.9C16.7 9.9 17.1 11.4 17.1 13.4V17H14.9V13.8C14.9 13 14.9 12 13.8 12C12.7 12 12.5 12.8 12.5 13.7V17H10.3V10.1H10Z" fill="white"/>
-                </svg>
-              </a>
-            </div>
-          </footer>
-        </div>
+          <div className="home-footer-right">
+            <span className="home-footer-credit-label">Diseño y desarrollo:</span>
+            <span className="home-footer-credit-name">Jazmín Coral Barrera</span>
+            <a
+              href={creatorLinkedinUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="home-footer-linkedin"
+              aria-label="LinkedIn de la creadora"
+            >
+              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="2.5" y="2.5" width="19" height="19" rx="4" fill="currentColor"/>
+                <path d="M8 10.1V17H5.8V10.1H8ZM6.9 6.8C7.6 6.8 8.1 7.3 8.1 7.9C8.1 8.6 7.6 9.1 6.9 9.1C6.2 9.1 5.7 8.6 5.7 7.9C5.7 7.3 6.2 6.8 6.9 6.8Z" fill="white"/>
+                <path d="M10 10.1H12.1V11.1H12.1C12.4 10.5 13.2 9.9 14.3 9.9C16.7 9.9 17.1 11.4 17.1 13.4V17H14.9V13.8C14.9 13 14.9 12 13.8 12C12.7 12 12.5 12.8 12.5 13.7V17H10.3V10.1H10Z" fill="white"/>
+              </svg>
+            </a>
+          </div>
+        </footer>
       </div>
     </div>
   )

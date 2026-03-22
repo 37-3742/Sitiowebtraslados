@@ -139,7 +139,7 @@ export default function EventView(){
     if(!dateValue) return Number.NaN
 
     if(typeof dateValue === 'string'){
-      const match = dateValue.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+      const match = dateValue.trim().match(/^(\d{4})-(\d{2})-(\d{2})/)
       if(match){
         const [, year, month, day] = match
         return new Date(Number(year), Number(month) - 1, Number(day)).getTime()
@@ -220,9 +220,45 @@ export default function EventView(){
 
   function formatEventDate(dateValue){
     if(!dateValue) return 'Fecha no definida'
-    const parsed = new Date(dateValue)
-    if(Number.isNaN(parsed.getTime())) return 'Fecha inválida'
-    return parsed.toLocaleDateString('es-AR', { day: '2-digit', month: 'short', year: 'numeric' })
+    const dayMs = getCalendarDayTime(dateValue)
+    if(!Number.isFinite(dayMs)) return 'Fecha inválida'
+    return new Date(dayMs).toLocaleDateString('es-AR', { day: '2-digit', month: 'short', year: 'numeric' })
+  }
+
+  function collectEventDateKeys(eventData){
+    const source = [
+      ...(Array.isArray(eventData?.dates) ? eventData.dates : []),
+      eventData?.date || ''
+    ]
+    const unique = []
+    const seen = new Set()
+
+    for(const rawValue of source){
+      if(typeof rawValue !== 'string') continue
+      const dayMs = getCalendarDayTime(rawValue)
+      if(!Number.isFinite(dayMs)) continue
+      const parsed = new Date(dayMs)
+      const key = `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`
+      if(seen.has(key)) continue
+      seen.add(key)
+      unique.push(key)
+    }
+
+    unique.sort((a,b)=>a.localeCompare(b))
+    return unique
+  }
+
+  function formatEventDatesSummary(eventData){
+    const dateKeys = collectEventDateKeys(eventData)
+    if(!dateKeys.length) return 'Fecha no definida'
+    if(dateKeys.length === 1) return formatEventDate(dateKeys[0])
+    return dateKeys.map(value => formatEventDate(value)).join(' • ')
+  }
+
+  function canCommentEvent(eventData){
+    const dateKeys = collectEventDateKeys(eventData)
+    if(!dateKeys.length) return false
+    return isPastEvent(dateKeys[dateKeys.length - 1])
   }
 
   function formatEventStatus(rawStatus){
@@ -267,7 +303,7 @@ export default function EventView(){
     }
   }
 
-  const canComment = eventInfo ? isPastEvent(eventInfo.date) : false
+  const canComment = eventInfo ? canCommentEvent(eventInfo) : false
 
   return (
     <div className="container">
@@ -354,7 +390,7 @@ export default function EventView(){
 
               <div className="event-info-item">
                 <div className="event-info-label">Fecha</div>
-                <div className="event-info-value">{formatEventDate(eventInfo.date)}</div>
+                <div className="event-info-value">{formatEventDatesSummary(eventInfo)}</div>
               </div>
 
               <div className="event-info-item event-info-item--full">

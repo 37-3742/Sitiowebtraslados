@@ -18,7 +18,7 @@ function readLocalDB(){
     const raw = fs.readFileSync(localDbFile, 'utf8');
     return JSON.parse(raw);
   }catch(err){
-    return { drivers: {}, events: {}, locations: {}, comments: {} };
+    return { admins: {}, drivers: {}, events: {}, locations: {}, comments: {}, settings: {} };
   }
 }
 function writeLocalDB(data){
@@ -28,7 +28,7 @@ function writeLocalDB(data){
 // ensure file exists
 (async ()=>{
   if(!fs.existsSync(localDbFile)){
-    writeLocalDB({ drivers: {}, events: {}, locations: {}, comments: {} });
+    writeLocalDB({ admins: {}, drivers: {}, events: {}, locations: {}, comments: {}, settings: {} });
   }
 })();
 
@@ -110,6 +110,43 @@ function normalizePaymentMethod(rawValue){
   return rawValue.trim().replace(/\s+/g, ' ');
 }
 
+function normalizeTransferAlias(rawValue){
+  if(typeof rawValue !== 'string') return '';
+  return rawValue.trim();
+}
+
+function normalizeTransferCBU(rawValue){
+  if(typeof rawValue !== 'string') return '';
+  return rawValue.replace(/\s+/g, '').trim();
+}
+
+function normalizeTransferBanco(rawValue){
+  if(typeof rawValue !== 'string') return '';
+  return rawValue.trim().replace(/\s+/g, ' ');
+}
+
+function normalizeTransferAccountPreset(rawValue){
+  if(!rawValue || typeof rawValue !== 'object') return null;
+
+  const alias = normalizeTransferAlias(rawValue.alias ?? rawValue.transferAlias ?? '');
+  const cbu = normalizeTransferCBU(rawValue.cbu ?? rawValue.transferCBU ?? '');
+  const banco = normalizeTransferBanco(rawValue.banco ?? rawValue.transferBanco ?? '');
+
+  if(!alias && !cbu && !banco) return null;
+
+  return {
+    alias: alias.slice(0, 120),
+    cbu: cbu.slice(0, 40),
+    banco: banco.slice(0, 120)
+  };
+}
+
+function transferAccountPresetKey(rawValue){
+  const normalized = normalizeTransferAccountPreset(rawValue);
+  if(!normalized) return '';
+  return `${normalized.alias.toLowerCase()}|${normalized.cbu}|${normalized.banco.toLowerCase()}`;
+}
+
 function isValidWhatsappNumber(rawValue){
   return /^\+?\d{7,20}$/.test(rawValue || '');
 }
@@ -117,6 +154,105 @@ function isValidWhatsappNumber(rawValue){
 function normalizeRefundPolicyNotice(rawValue){
   if(typeof rawValue !== 'string') return DEFAULT_REFUND_POLICY_NOTICE;
   return rawValue.trim() ? rawValue : DEFAULT_REFUND_POLICY_NOTICE;
+}
+
+function normalizeAdminIdentifier(rawValue){
+  if(typeof rawValue !== 'string') return '';
+  return rawValue.trim().toLowerCase();
+}
+
+function normalizeAdminEmail(rawValue){
+  return normalizeAdminIdentifier(rawValue);
+}
+
+function isValidAdminEmail(rawValue){
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawValue || '');
+}
+
+function hasAdminIdentifierPrefix(rawValue){
+  const normalized = normalizeAdminIdentifier(rawValue);
+  if(!normalized) return false;
+
+  if(normalized.startsWith('admin')) return true;
+  const localPart = normalized.includes('@') ? normalized.split('@')[0] : normalized;
+  return localPart.startsWith('admin');
+}
+
+function canManageAdminUsers(rawAdmin){
+  if(!rawAdmin || typeof rawAdmin !== 'object') return false;
+  if(rawAdmin.canManageAdmins === true) return true;
+
+  const username = typeof rawAdmin.username === 'string' ? rawAdmin.username : '';
+  const email = typeof rawAdmin.email === 'string' ? rawAdmin.email : '';
+  return hasAdminIdentifierPrefix(username) || hasAdminIdentifierPrefix(email);
+}
+
+function buildAdminPublicProfile(adminId, rawAdmin){
+  if(!adminId || !rawAdmin || typeof rawAdmin !== 'object') return null;
+  const username = typeof rawAdmin.username === 'string' ? rawAdmin.username : '';
+  const email = typeof rawAdmin.email === 'string' ? rawAdmin.email : '';
+  const name = typeof rawAdmin.name === 'string' ? rawAdmin.name : '';
+  const createdAt = Number(rawAdmin.createdAt || 0);
+  const currentPassword = typeof rawAdmin.currentPassword === 'string' ? rawAdmin.currentPassword : '';
+
+  return {
+    id: adminId,
+    username,
+    email,
+    name,
+    createdAt: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : null,
+    canManageAdmins: canManageAdminUsers(rawAdmin),
+    currentPassword: currentPassword || ''
+  };
+}
+
+function normalizeEventDate(rawValue){
+  if(typeof rawValue !== 'string') return '';
+  const trimmed = rawValue.trim();
+  if(!trimmed) return '';
+
+  const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!match) return '';
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(year, month - 1, day);
+
+  if(
+    parsed.getFullYear() !== year
+    || parsed.getMonth() !== month - 1
+    || parsed.getDate() !== day
+  ) return '';
+
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
+
+function normalizeEventDates(rawDates, fallbackDate = ''){
+  const source = Array.isArray(rawDates) ? rawDates : [];
+  const normalized = [];
+  const seen = new Set();
+
+  const candidates = [...source, fallbackDate];
+  for(const value of candidates){
+    const cleaned = normalizeEventDate(typeof value === 'string' ? value : String(value || ''));
+    if(!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    normalized.push(cleaned);
+  }
+
+  normalized.sort((a, b)=> a.localeCompare(b));
+  return normalized;
+}
+
+function getPrimaryEventDate(rawDates, fallbackDate = ''){
+  const normalized = normalizeEventDates(rawDates, fallbackDate);
+  return normalized[0] || '';
+}
+
+function getLastEventDate(rawDates, fallbackDate = ''){
+  const normalized = normalizeEventDates(rawDates, fallbackDate);
+  return normalized.length ? normalized[normalized.length - 1] : '';
 }
 
 function authMiddleware(req,res,next){
@@ -160,23 +296,132 @@ async function seedDriver(){
 }
 seedDriver();
 
-// Admin helpers: find admin
-async function findAdminByUsername(username){
+// Admin helpers: find/list admin accounts
+async function listAdminAccounts(){
+  if(useFirebase){
+    const snap = await firebaseDB.ref('admins').once('value');
+    const raw = snap.val() || {};
+    return Object.entries(raw).map(([id, data])=>({ id, ...(data || {}) }));
+  }
+
+  const db = readLocalDB();
+  const admins = db.admins || {};
+  return Object.entries(admins).map(([id, data])=>({ id, ...(data || {}) }));
+}
+
+async function findAdminByIdentifier(identifier){
+  const normalized = normalizeAdminIdentifier(identifier);
+  if(!normalized) return null;
+
   if(useFirebase){
     const ref = firebaseDB.ref('admins');
-    const snap = await ref.orderByChild('username').equalTo(username).once('value');
-    if(!snap.exists()) return null;
-    let found = null;
-    snap.forEach(child=>{ found = { id: child.key, ...child.val() }; })
-    return found;
-  }else{
-    const db = readLocalDB();
-    const admins = db.admins || {};
-    for(const id of Object.keys(admins)){
-      if(admins[id].username === username) return { id, ...admins[id] }
+
+    const byUsername = await ref.orderByChild('username').equalTo(normalized).once('value');
+    if(byUsername.exists()){
+      let found = null;
+      byUsername.forEach(child=>{ found = { id: child.key, ...child.val() }; });
+      if(found) return found;
     }
-    return null
+
+    const byEmail = await ref.orderByChild('email').equalTo(normalized).once('value');
+    if(byEmail.exists()){
+      let found = null;
+      byEmail.forEach(child=>{ found = { id: child.key, ...child.val() }; });
+      if(found) return found;
+    }
+
+    return null;
   }
+
+  const db = readLocalDB();
+  const admins = db.admins || {};
+  for(const id of Object.keys(admins)){
+    const current = admins[id] || {};
+    const username = normalizeAdminIdentifier(current.username || '');
+    const email = normalizeAdminEmail(current.email || '');
+    if(normalized === username || normalized === email) return { id, ...current };
+  }
+
+  return null;
+}
+
+async function findAdminById(adminId){
+  if(!adminId) return null;
+
+  if(useFirebase){
+    const snap = await firebaseDB.ref(`admins/${adminId}`).once('value');
+    if(!snap.exists()) return null;
+    return { id: adminId, ...snap.val() };
+  }
+
+  const db = readLocalDB();
+  const adminAccount = db.admins && db.admins[adminId] ? db.admins[adminId] : null;
+  return adminAccount ? { id: adminId, ...adminAccount } : null;
+}
+
+async function createAdminAccount({ email, password, name }){
+  const normalizedEmail = normalizeAdminEmail(email);
+  const cleanName = typeof name === 'string' ? name.trim().slice(0, 80) : '';
+  const canManageAdmins = hasAdminIdentifierPrefix(normalizedEmail);
+  const passwordHash = await bcrypt.hash(password, 10);
+  const payload = {
+    username: normalizedEmail,
+    email: normalizedEmail,
+    name: cleanName || normalizedEmail.split('@')[0],
+    passwordHash,
+    currentPassword: password,
+    createdAt: Date.now(),
+    canManageAdmins
+  };
+
+  if(useFirebase){
+    const ref = firebaseDB.ref('admins');
+    const newRef = await ref.push(payload);
+    return { id: newRef.key, ...payload };
+  }
+
+  const db = readLocalDB();
+  db.admins = db.admins || {};
+  const id = `admin_${Date.now()}`;
+  db.admins[id] = payload;
+  writeLocalDB(db);
+  return { id, ...payload };
+}
+
+async function deleteAdminAccount(adminId){
+  if(useFirebase){
+    await firebaseDB.ref(`admins/${adminId}`).remove();
+    return;
+  }
+
+  const db = readLocalDB();
+  db.admins = db.admins || {};
+  delete db.admins[adminId];
+  writeLocalDB(db);
+}
+
+async function updateAdminPasswordHash(adminId, passwordHash, currentPassword = ''){
+  if(!adminId || !passwordHash) return false;
+  const normalizedCurrentPassword = typeof currentPassword === 'string' ? currentPassword.trim() : '';
+
+  if(useFirebase){
+    const ref = firebaseDB.ref(`admins/${adminId}`);
+    const snap = await ref.once('value');
+    if(!snap.exists()) return false;
+    const nextPayload = { passwordHash, updatedAt: Date.now() };
+    if(normalizedCurrentPassword) nextPayload.currentPassword = normalizedCurrentPassword;
+    await ref.update(nextPayload);
+    return true;
+  }
+
+  const db = readLocalDB();
+  db.admins = db.admins || {};
+  if(!db.admins[adminId]) return false;
+  const nextAdmin = { ...db.admins[adminId], passwordHash, updatedAt: Date.now() };
+  if(normalizedCurrentPassword) nextAdmin.currentPassword = normalizedCurrentPassword;
+  db.admins[adminId] = nextAdmin;
+  writeLocalDB(db);
+  return true;
 }
 
 // Seed admin if not present
@@ -187,7 +432,7 @@ async function seedAdmin(){
       const snap = await ref.once('value');
       if(!snap.exists()){
         const passHash = await bcrypt.hash('admin123', 10);
-        await ref.push({ username: 'admin', passwordHash: passHash, name: 'Administrador' });
+        await ref.push({ username: 'admin', email: '', passwordHash: passHash, currentPassword: 'admin123', name: 'Administrador', createdAt: Date.now(), canManageAdmins: true });
         console.log('Seeded admin admin / admin123 in Firebase');
       }
     }else{
@@ -195,13 +440,13 @@ async function seedAdmin(){
       db.admins = db.admins || {};
       if(Object.keys(db.admins).length === 0){
         const passHash = await bcrypt.hash('admin123', 10);
-        const id = 'admin1'
-        db.admins[id] = { username: 'admin', passwordHash: passHash, name: 'Administrador' }
-        writeLocalDB(db)
+        const id = 'admin1';
+        db.admins[id] = { username: 'admin', email: '', passwordHash: passHash, currentPassword: 'admin123', name: 'Administrador', createdAt: Date.now(), canManageAdmins: true };
+        writeLocalDB(db);
         console.log('Seeded admin admin / admin123 in local DB');
       }
     }
-  }catch(err){ console.error('Error seeding admin', err) }
+  }catch(err){ console.error('Error seeding admin', err); }
 }
 seedAdmin();
 
@@ -383,6 +628,7 @@ app.post('/api/events', authMiddleware, async (req,res)=>{
     name,
     code,
     date,
+    dates,
     image,
     reservationLink,
     whatsappNumber,
@@ -406,10 +652,14 @@ app.post('/api/events', authMiddleware, async (req,res)=>{
     refundPolicyNotice
   } = req.body;
 
+  const normalizedDates = normalizeEventDates(dates, date);
+  const primaryDate = getPrimaryEventDate(normalizedDates, date);
+
   const result = await createEvent({
     name,
     code,
-    date,
+    date: primaryDate,
+    dates: normalizedDates,
     image,
     reservationLink,
     whatsappNumber,
@@ -493,7 +743,8 @@ app.post('/api/events/:id/comments', async (req,res)=>{
     const event = await getEventById(eventId);
     if(!event) return res.status(404).json({ error: 'Evento no encontrado' });
 
-    const eventDateMs = new Date(event.date || '').getTime();
+    const lastEventDate = getLastEventDate(event.dates, event.date);
+    const eventDateMs = new Date(lastEventDate || '').getTime();
     if(!Number.isFinite(eventDateMs)){
       return res.status(400).json({ error: 'El evento no tiene una fecha válida para recibir comentarios' });
     }
@@ -505,7 +756,7 @@ app.post('/api/events/:id/comments', async (req,res)=>{
     const payload = {
       eventId,
       eventName: event.name || '',
-      eventDate: event.date || '',
+      eventDate: lastEventDate || '',
       customerName,
       comment,
       rating,
@@ -559,13 +810,148 @@ app.post('/api/driver/:id/update', authMiddleware, async (req,res)=>{
 
 // Admin login
 app.post('/api/admin/login', async (req,res)=>{
-  const { username, password } = req.body;
-  const found = await findAdminByUsername(username);
+  const { username, email, password } = req.body;
+  const identifier = typeof username === 'string' && username.trim()
+    ? username
+    : (typeof email === 'string' ? email : '');
+
+  if(typeof password !== 'string' || !password.trim()){
+    return res.status(400).json({ error: 'Contraseña requerida' });
+  }
+
+  const found = await findAdminByIdentifier(identifier);
   if(!found) return res.status(401).json({ error: 'Credenciales inválidas' });
   const match = await bcrypt.compare(password, found.passwordHash);
   if(!match) return res.status(401).json({ error: 'Credenciales inválidas' });
-  const token = generateToken({ adminId: found.id, role: 'admin', name: found.name });
-  res.json({ token, adminId: found.id, name: found.name });
+  const canManageAdmins = canManageAdminUsers(found);
+  const token = generateToken({ adminId: found.id, role: 'admin', name: found.name, email: found.email || '', canManageAdmins });
+  res.json({ token, adminId: found.id, name: found.name, email: found.email || '', username: found.username || '', canManageAdmins });
+});
+
+// Admin only: update own password
+app.patch('/api/admin/password', authMiddleware, async (req,res)=>{
+  if(!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' });
+
+  const adminId = req.user.adminId;
+  if(!adminId) return res.status(401).json({ error: 'Sesión inválida' });
+
+  const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword.trim() : '';
+  const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword.trim() : '';
+
+  if(!currentPassword) return res.status(400).json({ error: 'Ingresá tu contraseña actual' });
+  if(newPassword.length < 8) return res.status(400).json({ error: 'La nueva contraseña debe tener al menos 8 caracteres' });
+
+  const found = await findAdminById(adminId);
+  if(!found || typeof found.passwordHash !== 'string'){
+    return res.status(404).json({ error: 'Usuario administrador no encontrado' });
+  }
+
+  const currentMatches = await bcrypt.compare(currentPassword, found.passwordHash);
+  if(!currentMatches){
+    return res.status(400).json({ error: 'La contraseña actual es incorrecta' });
+  }
+
+  const repeatsCurrent = await bcrypt.compare(newPassword, found.passwordHash);
+  if(repeatsCurrent){
+    return res.status(400).json({ error: 'La nueva contraseña debe ser diferente a la actual' });
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  const updated = await updateAdminPasswordHash(adminId, passwordHash, newPassword);
+  if(!updated) return res.status(404).json({ error: 'Usuario administrador no encontrado' });
+
+  return res.json({ success: true });
+});
+
+// Admin only: list admin users
+app.get('/api/admin/users', authMiddleware, async (req,res)=>{
+  if(!req.user || req.user.role!=='admin') return res.status(403).json({ error: 'No autorizado' });
+  const requester = await findAdminById(req.user.adminId);
+  if(!canManageAdminUsers(requester)) return res.status(403).json({ error: 'No tenés permisos para gestionar usuarios admin' });
+
+  const admins = await listAdminAccounts();
+  const normalized = admins
+    .map(item=>buildAdminPublicProfile(item.id, item))
+    .filter(Boolean)
+    .sort((a, b)=>(a.email || a.username || '').localeCompare(b.email || b.username || ''));
+  res.json(normalized);
+});
+
+// Admin only: create admin user with email + password
+app.post('/api/admin/users', authMiddleware, async (req,res)=>{
+  if(!req.user || req.user.role!=='admin') return res.status(403).json({ error: 'No autorizado' });
+  const requester = await findAdminById(req.user.adminId);
+  if(!canManageAdminUsers(requester)) return res.status(403).json({ error: 'No tenés permisos para gestionar usuarios admin' });
+
+  const email = normalizeAdminEmail(req.body?.email || '');
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  const name = typeof req.body?.name === 'string' ? req.body.name : '';
+
+  if(!email || !isValidAdminEmail(email)) return res.status(400).json({ error: 'Email inválido' });
+  if(password.trim().length < 8) return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
+
+  const exists = await findAdminByIdentifier(email);
+  if(exists) return res.status(409).json({ error: 'Ya existe un admin con ese email' });
+
+  const created = await createAdminAccount({ email, password: password.trim(), name });
+  return res.status(201).json({ admin: buildAdminPublicProfile(created.id, created) });
+});
+
+// Admin only: update another admin user's password
+app.patch('/api/admin/users/:id/password', authMiddleware, async (req,res)=>{
+  if(!req.user || req.user.role!=='admin') return res.status(403).json({ error: 'No autorizado' });
+  const requester = await findAdminById(req.user.adminId);
+  if(!canManageAdminUsers(requester)) return res.status(403).json({ error: 'No tenés permisos para gestionar usuarios admin' });
+
+  const targetId = req.params.id;
+  if(!targetId) return res.status(400).json({ error: 'ID inválido' });
+  if(req.user.adminId === targetId){
+    return res.status(400).json({ error: 'Usá la sección "Actualizar mi contraseña" para tu propio usuario' });
+  }
+
+  const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword.trim() : '';
+  if(newPassword.length < 8) return res.status(400).json({ error: 'La nueva contraseña debe tener al menos 8 caracteres' });
+
+  const target = await findAdminById(targetId);
+  if(!target || typeof target.passwordHash !== 'string'){
+    return res.status(404).json({ error: 'Usuario administrador no encontrado' });
+  }
+
+  const repeatsCurrent = await bcrypt.compare(newPassword, target.passwordHash);
+  if(repeatsCurrent){
+    return res.status(400).json({ error: 'La nueva contraseña debe ser diferente a la actual' });
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  const updated = await updateAdminPasswordHash(targetId, passwordHash, newPassword);
+  if(!updated) return res.status(404).json({ error: 'Usuario administrador no encontrado' });
+
+  return res.json({ success: true });
+});
+
+// Admin only: delete admin user
+app.delete('/api/admin/users/:id', authMiddleware, async (req,res)=>{
+  if(!req.user || req.user.role!=='admin') return res.status(403).json({ error: 'No autorizado' });
+  const requester = await findAdminById(req.user.adminId);
+  if(!canManageAdminUsers(requester)) return res.status(403).json({ error: 'No tenés permisos para gestionar usuarios admin' });
+
+  const targetId = req.params.id;
+  if(!targetId) return res.status(400).json({ error: 'ID inválido' });
+
+  if(req.user.adminId === targetId){
+    return res.status(400).json({ error: 'No podés eliminar tu propio usuario administrador' });
+  }
+
+  const allAdmins = await listAdminAccounts();
+  if(allAdmins.length <= 1){
+    return res.status(400).json({ error: 'Debe existir al menos un usuario administrador activo' });
+  }
+
+  const target = await findAdminById(targetId);
+  if(!target) return res.status(404).json({ error: 'Usuario administrador no encontrado' });
+
+  await deleteAdminAccount(targetId);
+  return res.json({ success: true });
 });
 
 // List all events
@@ -757,6 +1143,11 @@ app.post('/api/events/upload', authMiddleware, upload.single('image'), async (re
     const name = req.body.name || ''
     const code = req.body.code || name
     const date = req.body.date || ''
+    let dates = []
+    try { dates = JSON.parse(req.body.dates || '[]') } catch(e) { dates = [] }
+    if(!Array.isArray(dates)) dates = []
+    const normalizedDates = normalizeEventDates(dates, date)
+    const primaryDate = getPrimaryEventDate(normalizedDates, date)
     const reservationLink = req.body.reservationLink || ''
     const whatsappNumber = req.body.whatsappNumber || ''
     const province = req.body.province || ''
@@ -786,7 +1177,8 @@ app.post('/api/events/upload', authMiddleware, upload.single('image'), async (re
     const event = {
       name,
       code,
-      date,
+      date: primaryDate,
+      dates: normalizedDates,
       province, // <-- ensure province is saved
       reservationLink,
       whatsappNumber,
@@ -866,6 +1258,16 @@ app.patch('/api/events/:id', authMiddleware, async (req,res)=>{
   }
   if(Object.prototype.hasOwnProperty.call(updates, 'imageScale')){
     updates.imageScale = parseScalePercent(updates.imageScale, 100);
+  }
+  if(
+    Object.prototype.hasOwnProperty.call(updates, 'date')
+    || Object.prototype.hasOwnProperty.call(updates, 'dates')
+  ){
+    const incomingDate = Object.prototype.hasOwnProperty.call(updates, 'date') ? updates.date : '';
+    const incomingDates = Object.prototype.hasOwnProperty.call(updates, 'dates') ? updates.dates : [];
+    const normalizedDates = normalizeEventDates(incomingDates, incomingDate);
+    updates.dates = normalizedDates;
+    updates.date = getPrimaryEventDate(normalizedDates, incomingDate);
   }
   try{
     if(useFirebase){
@@ -1125,6 +1527,90 @@ app.post('/api/settings/reservation-payment-methods', authMiddleware, async (req
   }catch(err){
     console.error('Error saving reservation payment methods', err);
     return res.status(500).json({ error: 'Error guardando formas de pago' });
+  }
+});
+
+// Save reusable defaults for repetitive event form fields (admin only)
+app.post('/api/settings/event-defaults', authMiddleware, async (req, res) => {
+  if(!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' });
+
+  try{
+    const raw = (req.body?.eventDefaults && typeof req.body.eventDefaults === 'object')
+      ? req.body.eventDefaults
+      : (req.body || {});
+
+    const transferAmountRaw = typeof raw.transferAmount === 'string'
+      ? raw.transferAmount.replace(',', '.').trim()
+      : String(raw.transferAmount ?? '').trim();
+    const transferAmountParsed = Number(transferAmountRaw || '0');
+    const transferAmount = Number.isFinite(transferAmountParsed)
+      ? Math.max(0, Math.round(transferAmountParsed * 100) / 100)
+      : 0;
+
+    const eventDefaults = {
+      whatsappNumber: normalizeWhatsappNumber(raw.whatsappNumber || ''),
+      reservationLink: typeof raw.reservationLink === 'string' ? raw.reservationLink.trim() : '',
+      paymentMethods: typeof raw.paymentMethods === 'string' ? raw.paymentMethods.trim() : '',
+      transferAlias: normalizeTransferAlias(raw.transferAlias || ''),
+      transferCBU: normalizeTransferCBU(raw.transferCBU || ''),
+      transferBanco: normalizeTransferBanco(raw.transferBanco || ''),
+      transferAmount,
+      paymentProofDestination: typeof raw.paymentProofDestination === 'string' ? raw.paymentProofDestination.trim() : '',
+      postPaymentInstructions: typeof raw.postPaymentInstructions === 'string' ? raw.postPaymentInstructions.trim() : '',
+      refundPolicyNotice: normalizeRefundPolicyNotice(raw.refundPolicyNotice)
+    };
+
+    if(useFirebase){
+      await firebaseDB.ref('settings').update({ eventDefaults });
+    }else{
+      const db = readLocalDB();
+      db.settings = db.settings || {};
+      db.settings.eventDefaults = eventDefaults;
+      writeLocalDB(db);
+    }
+
+    return res.json({ eventDefaults });
+  }catch(err){
+    console.error('Error saving event defaults', err);
+    return res.status(500).json({ error: 'Error guardando plantilla' });
+  }
+});
+
+// Save frequently-used transfer account presets (admin only)
+app.post('/api/settings/transfer-account-presets', authMiddleware, async (req, res) => {
+  if(!req.user || req.user.role !== 'admin') return res.status(403).json({ error: 'No autorizado' });
+
+  try{
+    const rawAccounts = Array.isArray(req.body?.accounts)
+      ? req.body.accounts
+      : (Array.isArray(req.body?.transferAccountPresets) ? req.body.transferAccountPresets : null);
+
+    if(!rawAccounts) return res.status(400).json({ error: 'accounts debe ser un arreglo' });
+
+    const normalized = [];
+    const seen = new Set();
+    for(let i = 0; i < rawAccounts.length; i += 1){
+      const account = normalizeTransferAccountPreset(rawAccounts[i]);
+      if(!account || (!account.alias && !account.cbu)) continue;
+      const key = transferAccountPresetKey(account);
+      if(!key || seen.has(key)) continue;
+      seen.add(key);
+      normalized.push(account);
+    }
+
+    if(useFirebase){
+      await firebaseDB.ref('settings').update({ transferAccountPresets: normalized });
+    }else{
+      const db = readLocalDB();
+      db.settings = db.settings || {};
+      db.settings.transferAccountPresets = normalized;
+      writeLocalDB(db);
+    }
+
+    return res.json({ transferAccountPresets: normalized });
+  }catch(err){
+    console.error('Error saving transfer account presets', err);
+    return res.status(500).json({ error: 'Error guardando cuentas de transferencia' });
   }
 });
 
