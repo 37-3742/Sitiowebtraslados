@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: eventos-traslados-backend
+    env: docker
+    repo: https://github.com/37-3742/Traslados
+    branch: main
+    path: backend
+    dockerfilePath: Dockerfile
+    plan: free
+
+  - type: static
+    name: eventos-traslados-frontend
+    env: static
+    repo: https://github.com/37-3742/Traslados
+    branch: main
+    path: frontend
+    buildCommand: npm run build
+    startCommand: npm run preview
+    plan: free
